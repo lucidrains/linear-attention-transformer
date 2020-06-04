@@ -1,6 +1,6 @@
 ## Linear Attention Transformer
 
-A fully featured Transformer that mixes (QKᵀ)V local attention with Q(KᵀV) global attention for efficient long-range language modeling.
+A fully featured Transformer that mixes (QKᵀ)V local attention with Q(KᵀV) global attention (scales linearly with respect to sequence length) for efficient long-range language modeling.
 
 ## Citations
 
