@@ -6,11 +6,11 @@ A fully featured Transformer that mixes (QKᵀ)V local attention with Q(KᵀV) g
 
 ```bibtex
 @inproceedings{katharopoulos-et-al-2020,
-  author = {Katharopoulos, A. and Vyas, A. and Pappas, N. and Fleuret, F.},
-  title = {Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention},
+  author    = {Katharopoulos, A. and Vyas, A. and Pappas, N. and Fleuret, F.},
+  title     = {Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention},
   booktitle = {Proceedings of the International Conference on Machine Learning (ICML)},
-  year = {2020},
-  note = {(to appear)}
+  year      = {2020},
+  note      = {(to appear)}
 }
 ```
 
