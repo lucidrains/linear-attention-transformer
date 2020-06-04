@@ -16,7 +16,7 @@ $ pip install linear-attention-transformer
 
 Language model
 
-```bash
+```python
 import torch
 from linear_attention_transformer import LinearAttentionTransformerLM
 
