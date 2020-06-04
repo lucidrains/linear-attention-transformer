@@ -42,7 +42,8 @@ model = LinearAttentionTransformerLM(
     depth = 6,
     max_seq_len = SEQ_LEN,
     heads = 8,
-    causal = True
+    causal = True,
+    one_kv_head = True
 )
 
 model = AutoregressiveWrapper(model)
