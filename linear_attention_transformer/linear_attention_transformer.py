@@ -124,27 +124,36 @@ DEFAULT_PSI = lambda x: F.elu(x) + 1
 def safe_div(n, d, eps = 1e-6):
     return n.div_(d + eps)
 
-def linear_attn(q, k, v):
+def linear_attn(q, k, v, one_kv_head = False):
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
-    context = torch.einsum('bhnd,bhne->bhde', k, v)
-    attn = torch.einsum('bhnd,bhde->bhne', q, context)
+
+    context_einsum_eq = 'bhnd,bhne->bhde' if not one_kv_head else 'bnd,bne->bde'
+    context = torch.einsum(context_einsum_eq, k, v)
+
+    attn_einsum_eq = 'bhnd,bhde->bhne' if not one_kv_head else 'bhnd,bde->bhne'
+    attn = torch.einsum(attn_einsum_eq, q, context)
+
     return attn.reshape(*q.shape)
 
-def causal_linear_attn(q, k, v, psi = DEFAULT_PSI):
+def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False):
     q = q.softmax(dim=-1)
     k = psi(k)
-    k_cumsum = k.cumsum(dim=1).unsqueeze(-1)
+    k_cumsum = k.cumsum(dim=1)
 
-    context = torch.einsum('bhnd,bhne->bhnde', k, v)
+    context_einsum_eq = 'bhnd,bhne->bhnde' if not one_kv_head else 'bnd,bne->bnde'
+    context = torch.einsum(context_einsum_eq, k, v)
     context_cumsum = context.cumsum(dim=1)
-    context = safe_div(context_cumsum, k_cumsum)
-    attn = torch.einsum('bhnd,bhnde->bhne', q, context)
+
+    context = safe_div(context_cumsum, k_cumsum.unsqueeze(-1))
+
+    attn_einsum_eq = 'bhnd,bhnde->bhne' if not one_kv_head else 'bhnd,bnde->bhne'
+    attn = torch.einsum(attn_einsum_eq, q, context)
 
     return attn.reshape(*q.shape)
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, heads, causal, psi_fn = DEFAULT_PSI):
+    def __init__(self, dim, heads, causal, one_kv_head = False, psi_fn = DEFAULT_PSI):
         super().__init__()
         assert (dim % heads) == 0, 'embedding dimension must be divisible by number of heads'
         d_heads = dim // heads
@@ -153,28 +162,33 @@ class SelfAttention(nn.Module):
         self.attn_fn = linear_attn if not causal else partial(causal_linear_attn, psi=psi_fn)
 
         self.to_q = nn.Linear(dim, dim, bias = False)
-        self.to_k = nn.Linear(dim, d_heads * heads, bias = False)
-        self.to_v = nn.Linear(dim, d_heads * heads, bias = False)
+
+        kv_heads = 1 if one_kv_head else heads
+        self.one_kv_head = one_kv_head
+        self.kv_heads = kv_heads
+        self.to_k = nn.Linear(dim, d_heads * kv_heads, bias = False)
+        self.to_v = nn.Linear(dim, d_heads * kv_heads, bias = False)
         self.to_out = nn.Linear(dim, dim)
 
     def forward(self, x, **kwargs):
         q, k, v = self.to_q(x), self.to_k(x), self.to_v(x)
 
-        def psi(x):
-            return F.elu(x) + 1
-
         b, t, e, h = *q.shape, self.heads
         merge_heads = lambda x: x.reshape(b, t, h, -1).transpose(1, 2)
-        q, k, v = map(merge_heads, (q, k, v))
 
-        attn = self.attn_fn(q, k, v)
+        q = merge_heads(q)
+
+        if self.kv_heads != 1:
+            k, v = map(merge_heads, (k, v))
+
+        attn = self.attn_fn(q, k, v, one_kv_head = self.one_kv_head)
         attn = attn.transpose(1, 2).reshape(b, t, -1)
         return self.to_out(attn)
 
 class LinearAttentionTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, n_hashes = 8, ff_chunks = 100, attn_chunks = None, causal = False, weight_tie = False, lsh_dropout = 0., ff_dropout = 0., ff_activation = None, ff_mult = 4, ff_glu = False, post_attn_dropout = 0., layer_dropout = 0., lsh_attend_across_buckets = True, lsh_allow_duplicate_attention = True, random_rotations_per_head = False, twin_attention = False, use_scale_norm = False, use_full_attn = False, full_attn_thres = 0, reverse_thres = 0, num_mem_kv = 0, one_value_head = False, n_local_attn_heads = 0, turn_off_routing_attn = False, num_routing_tokens = 1):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False):
         super().__init__()
-        self.attn_layers = nn.ModuleList([PreNorm(dim, SelfAttention(dim, heads, causal)) for _ in range(depth)])
+        self.attn_layers = nn.ModuleList([PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head)) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([PreNorm(dim, FeedForward(dim)) for _ in range(depth)])
 
     def forward(self, x, **kwargs):
@@ -184,13 +198,13 @@ class LinearAttentionTransformer(nn.Module):
         return x
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, bucket_size = 64, n_hashes = 4, ff_chunks = 100, attn_chunks = 1, causal = False, weight_tie = False, lsh_dropout = 0., ff_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, post_attn_dropout = 0., layer_dropout = 0., random_rotations_per_head = False, twin_attention = False, use_scale_norm = False, use_full_attn = False, full_attn_thres = 0, reverse_thres = 0, num_mem_kv = 0, one_value_head = False, emb_dim = None, return_embeddings = False, weight_tie_embedding = False, fixed_position_emb = False, axial_position_emb = False, axial_position_shape = (), axial_position_dims = (), n_local_attn_heads = 0, turn_off_routing_attn = False, num_routing_tokens = 1):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False):
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
-        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal)
+        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):

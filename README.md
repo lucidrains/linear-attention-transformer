@@ -26,7 +26,8 @@ model = LinearAttentionTransformerLM(
     heads = 8,
     depth = 12,
     max_seq_len = 2048,
-    causal = True
+    causal = True,
+    one_kv_head = True # only use one key/value head, massive save on memory
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 2048)).cuda()
@@ -57,5 +58,15 @@ model(x) # (1, 2048, 512)
   volume    = {abs/1812.01243},
   year      = {2018},
   url       = {http://arxiv.org/abs/1812.01243}
+}
+```
+
+```bibtex
+@misc{shazeer2019fast,
+  title   = {Fast Transformer Decoding: One Write-Head is All You Need},
+  author  = {Noam Shazeer},
+  year    = {2019},
+  eprint  = {1911.02150},
+  archivePrefix = {arXiv}
 }
 ```
