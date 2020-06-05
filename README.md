@@ -28,6 +28,7 @@ model = LinearAttentionTransformerLM(
     max_seq_len = 8192,
     causal = True,
     one_kv_head = True, # use one key/value head to save on memory / compute
+    reversible = True,  # use reversible nets, from Reformer paper
     ff_chunks = 2       # feedforward chunking, from Reformer paper 
 ).cuda()
 

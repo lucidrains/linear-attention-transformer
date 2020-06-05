@@ -1,7 +1,26 @@
 import torch
 import torch.nn as nn
+from operator import itemgetter
 from torch.autograd.function import Function
 from torch.utils.checkpoint import get_device_states, set_device_states
+
+# for routing arguments into the functions of the reversible layer
+def route_args(router, args, depth):
+    routed_args = [(dict(), dict()) for _ in range(depth)]
+    matched_keys = [key for key in args.keys() if key in router]
+
+    for key in matched_keys:
+        val = args[key]
+        for depth, ((f_args, g_args), routes) in enumerate(zip(routed_args, router[key])):
+            new_f_args, new_g_args = map(lambda route: ({key: val} if route else {}), routes)
+            routed_args[depth] = ({**f_args, **new_f_args}, {**g_args, **new_g_args})
+    return routed_args
+
+def layer_drop(layers, prob):
+    to_drop = torch.empty(len(layers)).uniform_(0, 1) < prob
+    blocks = [block for block, drop in zip(layers, to_drop) if not drop]
+    blocks = layers[:1] if len(blocks) == 0 else blocks
+    return blocks
 
 # following example for saving and setting rng here https://pytorch.org/docs/stable/_modules/torch/utils/checkpoint.html
 class Deterministic(nn.Module):
@@ -94,10 +113,10 @@ class ReversibleBlock(nn.Module):
 
 class _ReversibleFunction(Function):
     @staticmethod
-    def forward(ctx, x, blocks, kwargs):
-        ctx.kwargs = kwargs
-        for block in blocks:
-            x = block(x, **kwargs)
+    def forward(ctx, x, blocks, args):
+        ctx.args = args
+        for block, kwarg in zip(blocks, args):
+            x = block(x, **kwarg)
         ctx.y = x.detach()
         ctx.blocks = blocks
         return x
@@ -105,17 +124,51 @@ class _ReversibleFunction(Function):
     @staticmethod
     def backward(ctx, dy):
         y = ctx.y
-        kwargs = ctx.kwargs
-        for block in ctx.blocks[::-1]:
+        args = ctx.args
+        for block, kwargs in zip(ctx.blocks[::-1], args[::-1]):
             y, dy = block.backward_pass(y, dy, **kwargs)
         return dy, None, None
 
-class ReversibleSequence(nn.Module):
-    def __init__(self, blocks):
-        super().__init__()
-        self.blocks = nn.ModuleList([ReversibleBlock(f, g) for (f, g) in blocks])
 
-    def forward(self, x, arg_route = (True, True), **kwargs):
-        f_args, g_args = map(lambda route: kwargs if route else {}, arg_route)
-        block_kwargs = {'f_args': f_args, 'g_args': g_args}
-        return _ReversibleFunction.apply(x, self.blocks, block_kwargs)
+class SequentialSequence(nn.Module):
+    def __init__(self, layers, args_route = {}, layer_dropout = 0.):
+        super().__init__()
+        assert all(len(route) == len(layers) for route in args_route.values()), 'each argument route map must have the same depth as the number of sequential layers'
+        self.layers = layers
+        self.args_route = args_route
+        self.layer_dropout = layer_dropout
+
+    def forward(self, x, **kwargs):
+        args = route_args(self.args_route, kwargs, len(self.layers))
+        layers_and_args = list(zip(self.layers, args))
+
+        if self.training and self.layer_dropout > 0:
+            layers_and_args = layer_drop(layers_and_args, self.layer_dropout)
+
+        for (f, g), (f_args, g_args) in layers_and_args:
+            x = x + f(x, **f_args)
+            x = x + g(x, **g_args)
+        return x
+
+class ReversibleSequence(nn.Module):
+    def __init__(self, blocks, args_route = {}, layer_dropout = 0.):
+        super().__init__()
+        self.args_route = args_route
+        self.layer_dropout = layer_dropout
+        self.blocks = nn.ModuleList([ReversibleBlock(f=f, g=g) for f, g in blocks])
+
+    def forward(self, x, **kwargs):
+        x = torch.cat([x, x], dim=-1)
+
+        blocks = self.blocks
+        args = route_args(self.args_route, kwargs, len(blocks))
+        args = list(map(lambda x: {'f_args': x[0], 'g_args': x[1]}, args))
+
+        layers_and_args = list(zip(blocks, args))
+
+        if self.training and self.layer_dropout > 0:
+            layers_and_args = layer_drop(layers_and_args, self.layer_dropout)
+            blocks, args = map(lambda ind: list(map(itemgetter(ind), layers_and_args)), (0, 1))
+
+        out =  _ReversibleFunction.apply(x, blocks, args)
+        return torch.stack(out.chunk(2, dim=-1)).sum(dim=0)

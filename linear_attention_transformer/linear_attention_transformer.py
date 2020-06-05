@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from functools import partial
-from linear_attention_transformer.reversible import ReversibleSequence
+from linear_attention_transformer.reversible import ReversibleSequence, SequentialSequence
 
 # helper functions
 
@@ -201,7 +201,7 @@ class SelfAttention(nn.Module):
         return self.to_out(attn)
 
 class LinearAttentionTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1, reversible = False):
         super().__init__()
         layers = nn.ModuleList([])
 
@@ -212,21 +212,20 @@ class LinearAttentionTransformer(nn.Module):
             ])
             layers.append(layer)
 
-        self.layers = ReversibleSequence(layers)
+        execute_type = ReversibleSequence if reversible else SequentialSequence
+        self.layers = execute_type(layers)
 
     def forward(self, x, **kwargs):
-        x = torch.cat([x, x], dim = -1)
-        x = self.layers(x, **kwargs)
-        return torch.stack(x.chunk(2, dim=-1)).mean(dim=0)
+        return self.layers(x, **kwargs)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, ff_chunks = 1):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1):
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
-        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks)
+        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):
