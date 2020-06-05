@@ -27,9 +27,12 @@ model = LinearAttentionTransformerLM(
     depth = 12,
     max_seq_len = 8192,
     causal = True,
-    one_kv_head = True, # use one key/value head to save on memory / compute
-    reversible = True,  # use reversible nets, from Reformer paper
-    ff_chunks = 2       # feedforward chunking, from Reformer paper 
+    blindspot_size = 64,      # this gives the global attention a blindspot of 64 tokens back, but gives back an order of magnitude return in memory savings. should be paired with local attention of at least a window size of this setting. setting this to 1 will allow for full global attention of past
+    n_local_attn_heads = 4,   # <todo>
+    local_attn_window = 128,  # <todo>
+    one_kv_head = True,       # use one key/value head to save on memory / compute
+    reversible = True,        # use reversible nets, from Reformer paper
+    ff_chunks = 2,            # feedforward chunking, from Reformer paper
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).cuda()
