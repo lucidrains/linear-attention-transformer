@@ -46,6 +46,9 @@ def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
     tensors = [padded_x[:, ind:(ind + t), ...] for ind in range(forward + backward + 1)]
     return torch.cat(tensors, dim=dim)
 
+def max_neg_value(tensor):
+    return -torch.finfo(tensor.dtype).max
+
 # helper classes
 
 class PreNorm(nn.Module):
@@ -84,18 +87,26 @@ class AbsolutePositionalEmbedding(nn.Module):
 # local attention
 
 class LocalAttention(nn.Module):
-    def __init__(self, bucket_size, causal = False, look_backward = 1, look_forward = 0, dropout = 0., shared_qk = False):
+    def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = None, dropout = 0., shared_qk = False):
         super().__init__()
-        assert not (causal and look_forward > 0), 'you cannot look forward if causal'
+        self.look_forward = default(look_forward, 0 if causal else 1)
+        assert not (causal and self.look_forward > 0), 'you cannot look forward if causal'
+
         self.bucket_size = bucket_size
         self.causal = causal
         self.look_backward = look_backward
-        self.look_forward = look_forward
         self.shared_qk = shared_qk
+
+        self.heads = heads
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, q, k, v, input_mask = None):
-        b, t, e, device, dtype = *q.shape, q.device, q.dtype
+        shape = q.shape
+
+        merge_into_batch = lambda t: t.reshape(-1, *t.shape[-2:])
+        q, k, v = map(merge_into_batch, (q, k, v))
+
+        b, t, e, h, device, dtype = *q.shape, self.heads, q.device, q.dtype
         bucket_size, causal, look_backward, look_forward, shared_qk = self.bucket_size, self.causal, self.look_backward, self.look_forward, self.shared_qk
 
         buckets = t // bucket_size
@@ -117,7 +128,8 @@ class LocalAttention(nn.Module):
         bq_k = look_around(b_t, **look_around_kwargs)
 
         dots = torch.einsum('bhie,bhje->bhij', bq, bk) * (e ** -0.5)
-        mask_value = float('-inf')
+
+        mask_value = max_neg_value(dots)
 
         if shared_qk:
             mask = bq_t[:, :, :, None] == bq_k[:, :, None, :]
@@ -138,8 +150,8 @@ class LocalAttention(nn.Module):
             input_mask = input_mask.reshape(-1, buckets, bucket_size)
             mq = mk = input_mask
             mk = look_around(mk, pad_value=False, **look_around_kwargs)
-            mask = (mq[:, None, :, :, None] * mk[:, None, :, None, :])
-            mask = merge_dims(0, 1, mask.expand(-1, h, -1, -1, -1))
+            mask = (mq[:, :, :, None] * mk[:, :, None, :])
+            mask = merge_dims(0, 1, expand_dim(mask, 1, h))
             dots.masked_fill_(~mask, mask_value)
             del mask
 
@@ -147,7 +159,7 @@ class LocalAttention(nn.Module):
         attn = self.dropout(attn)
 
         out = torch.einsum('bhij,bhje->bhie', attn, bv)
-        out = out.reshape(b, t, e)
+        out = out.reshape(*shape)
         return out
 
 # feedforward
@@ -212,13 +224,17 @@ def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False, bucket_s
     return attn.reshape(*q.shape)
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, heads, causal, one_kv_head = False, psi_fn = DEFAULT_PSI, blindspot_size = 1):
+    def __init__(self, dim, heads, causal, one_kv_head = False, psi_fn = DEFAULT_PSI, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128):
         super().__init__()
         assert (dim % heads) == 0, 'embedding dimension must be divisible by number of heads'
         d_heads = dim // heads
         self.heads = heads
         self.psi_fn = psi_fn
-        self.attn_fn = linear_attn if not causal else partial(causal_linear_attn, psi=psi_fn, bucket_size = blindspot_size)
+
+        self.global_attn_fn = linear_attn if not causal else partial(causal_linear_attn, psi=psi_fn, bucket_size = blindspot_size)
+
+        self.local_attn_heads = n_local_attn_heads
+        self.local_attn  = LocalAttention(local_attn_window_size, n_local_attn_heads, d_heads, causal = causal)
 
         self.to_q = nn.Linear(dim, dim, bias = False)
 
@@ -227,9 +243,11 @@ class SelfAttention(nn.Module):
         self.kv_heads = kv_heads
         self.to_k = nn.Linear(dim, d_heads * kv_heads, bias = False)
         self.to_v = nn.Linear(dim, d_heads * kv_heads, bias = False)
+
         self.to_out = nn.Linear(dim, dim)
 
-    def forward(self, x, **kwargs):
+
+    def forward(self, x, input_mask = None, **kwargs):
         q, k, v = (self.to_q(x), self.to_k(x), self.to_v(x))
 
         b, t, e, h = *q.shape, self.heads
@@ -237,21 +255,48 @@ class SelfAttention(nn.Module):
 
         q = merge_heads(q)
 
-        if self.kv_heads != 1:
+        if not self.one_kv_head:
             k, v = map(merge_heads, (k, v))
 
-        attn = self.attn_fn(q, k, v, one_kv_head = self.one_kv_head)
+        out = []
+
+        split_index_fn = partial(split_at_index, 1, self.local_attn_heads)
+
+        if not self.one_kv_head:
+            (lq, q), (lk, k), (lv, v) = map(split_index_fn, (q, k, v))
+        else:
+            lq, q = split_index_fn(q)
+            lk = expand_dim(k, 1, self.local_attn_heads)
+            lv = expand_dim(v, 1, self.local_attn_heads)
+
+        has_local, has_global = map(lambda x: x.shape[1] > 0, (lq, q))
+
+        if has_local:
+            local_out = self.local_attn(lq, lk, lv, input_mask = input_mask)
+            out.append(local_out)
+
+        if has_global:
+            global_out = self.global_attn_fn(q, k, v, one_kv_head = self.one_kv_head)
+            out.append(global_out)
+
+        attn = torch.cat(out, dim=1)
         attn = attn.transpose(1, 2).reshape(b, t, -1)
         return self.to_out(attn)
 
 class LinearAttentionTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1, reversible = False, blindspot_size = 1):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1, reversible = False, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128):
         super().__init__()
+        if type(n_local_attn_heads) is not tuple:
+            n_local_attn_heads = tuple([n_local_attn_heads] * depth)
+
+        assert len(n_local_attn_heads) == depth, 'local attention heads tuple must have the same length as the depth'
+        assert all([(local_heads <= heads) for local_heads in n_local_attn_heads]), 'number of local attn heads must be less than the maximum number of heads'
+
         layers = nn.ModuleList([])
 
-        for _ in range(depth):
+        for _, local_heads in zip(range(depth), n_local_attn_heads):
             layer = nn.ModuleList([
-                PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head, blindspot_size = blindspot_size)),
+                PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size)),
                 Chunk(ff_chunks, PreNorm(dim, FeedForward(dim)), along_dim = 1)
             ])
             layers.append(layer)
@@ -263,13 +308,13 @@ class LinearAttentionTransformer(nn.Module):
         return self.layers(x, **kwargs)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128):
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
-        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size)
+        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):
