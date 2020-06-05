@@ -24,6 +24,19 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
+class Chunk(nn.Module):
+    def __init__(self, chunks, fn, along_dim = -1):
+        super().__init__()
+        self.dim = along_dim
+        self.chunks = chunks
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        if self.chunks == 1:
+            return self.fn(x, **kwargs)
+        chunks = x.chunk(self.chunks, dim = self.dim)
+        return torch.cat([self.fn(c, **kwargs) for c in chunks], dim = self.dim)
+
 # positional embeddings
 
 class AbsolutePositionalEmbedding(nn.Module):
@@ -188,14 +201,14 @@ class SelfAttention(nn.Module):
         return self.to_out(attn)
 
 class LinearAttentionTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1):
         super().__init__()
         layers = nn.ModuleList([])
 
         for _ in range(depth):
             layer = nn.ModuleList([
                 PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head)),
-                PreNorm(dim, FeedForward(dim))
+                Chunk(ff_chunks, PreNorm(dim, FeedForward(dim)), along_dim = 1)
             ])
             layers.append(layer)
 
@@ -207,13 +220,13 @@ class LinearAttentionTransformer(nn.Module):
         return torch.stack(x.chunk(2, dim=-1)).mean(dim=0)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, ff_chunks = 1):
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
-        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head)
+        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):

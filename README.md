@@ -25,9 +25,10 @@ model = LinearAttentionTransformerLM(
     dim = 512,
     heads = 8,
     depth = 12,
-    max_seq_len = 2048,
+    max_seq_len = 8192,
     causal = True,
-    one_kv_head = True # only use one key/value head, massive save on memory
+    one_kv_head = True, # use one key/value head to save on memory / compute
+    ff_chunks = 2       # feedforward chunking, from Reformer paper 
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 2048)).cuda()
