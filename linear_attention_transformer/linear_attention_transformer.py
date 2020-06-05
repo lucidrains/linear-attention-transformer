@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from functools import partial
+from linear_attention_transformer.reversible import ReversibleSequence
 
 # helper functions
 
@@ -114,7 +115,7 @@ class FeedForward(nn.Module):
             nn.Linear(dim * mult, dim, bias=False)
         )
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         return self.net(x)
 
 # self attention layer
@@ -136,7 +137,8 @@ def linear_attn(q, k, v, one_kv_head = False):
 
     return attn.reshape(*q.shape)
 
-def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False):
+def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False, chunks = 10):
+    b, h, n, e = q.shape
     q = q.softmax(dim=-1)
     k = psi(k)
     k_cumsum = k.cumsum(dim=1)
@@ -171,7 +173,7 @@ class SelfAttention(nn.Module):
         self.to_out = nn.Linear(dim, dim)
 
     def forward(self, x, **kwargs):
-        q, k, v = self.to_q(x), self.to_k(x), self.to_v(x)
+        q, k, v = (self.to_q(x), self.to_k(x), self.to_v(x))
 
         b, t, e, h = *q.shape, self.heads
         merge_heads = lambda x: x.reshape(b, t, h, -1).transpose(1, 2)
@@ -188,14 +190,21 @@ class SelfAttention(nn.Module):
 class LinearAttentionTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False):
         super().__init__()
-        self.attn_layers = nn.ModuleList([PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head)) for _ in range(depth)])
-        self.ff_layers = nn.ModuleList([PreNorm(dim, FeedForward(dim)) for _ in range(depth)])
+        layers = nn.ModuleList([])
+
+        for _ in range(depth):
+            layer = nn.ModuleList([
+                PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head)),
+                PreNorm(dim, FeedForward(dim))
+            ])
+            layers.append(layer)
+
+        self.layers = ReversibleSequence(layers)
 
     def forward(self, x, **kwargs):
-        for attn, ff in zip(self.attn_layers, self.ff_layers):
-            x = attn(x, **kwargs) + x
-            x = ff(x) + x
-        return x
+        x = torch.cat([x, x], dim = -1)
+        x = self.layers(x, **kwargs)
+        return torch.stack(x.chunk(2, dim=-1)).mean(dim=0)
 
 class LinearAttentionTransformerLM(nn.Module):
     def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False):

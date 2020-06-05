@@ -70,3 +70,13 @@ model(x) # (1, 2048, 512)
   archivePrefix = {arXiv}
 }
 ```
+
+```bibtex
+@inproceedings{kitaev2020reformer,
+    title       = {Reformer: The Efficient Transformer},
+    author      = {Nikita Kitaev and Lukasz Kaiser and Anselm Levskaya},
+    booktitle   = {International Conference on Learning Representations},
+    year        = {2020},
+    url         = {https://openreview.net/forum?id=rkgNKkHtvB}
+}
+```
