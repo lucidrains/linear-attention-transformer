@@ -6,6 +6,9 @@ from linear_attention_transformer.reversible import ReversibleSequence, Sequenti
 
 # helper functions
 
+def default(value, d):
+    return d if value is None else value
+
 def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
     t = x.shape[1]
     dims = (len(x.shape) - dim) * (0, 0)
@@ -150,21 +153,31 @@ def linear_attn(q, k, v, one_kv_head = False):
 
     return attn.reshape(*q.shape)
 
-def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False, chunks = 10):
+def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False, buckets = None):
     b, h, n, e = q.shape
+    buckets = default(buckets, n)
+
     q = q.softmax(dim=-1)
     k = psi(k)
-    k_cumsum = k.cumsum(dim=1)
 
-    context_einsum_eq = 'bhnd,bhne->bhnde' if not one_kv_head else 'bnd,bne->bnde'
-    context = torch.einsum(context_einsum_eq, k, v)
-    context_cumsum = context.cumsum(dim=1)
+    bucket_fn = lambda x: x.reshape(*x.shape[:-2], buckets, -1, e)
+    b_q, b_k, b_v = map(bucket_fn, (q, k, v))
 
-    context = safe_div(context_cumsum, k_cumsum.unsqueeze(-1))
+    b_k_sum = b_k.sum(dim=-2)
+    b_k_cumsum = b_k_sum.cumsum(dim=-2)
 
-    attn_einsum_eq = 'bhnd,bhnde->bhne' if not one_kv_head else 'bhnd,bnde->bhne'
-    attn = torch.einsum(attn_einsum_eq, q, context)
+    context_einsum_eq = 'bhund,bhune->bhude' if not one_kv_head else 'bund,bune->bude'
+    context = torch.einsum(context_einsum_eq, b_k, b_v)
+    context_cumsum = context.cumsum(dim=-3)
 
+    context = safe_div(context_cumsum, b_k_cumsum.unsqueeze(-1))
+
+    if buckets != n:
+        context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
+        context = context[:, :-1]
+
+    attn_einsum_eq = 'bhund,bhude->bhune' if not one_kv_head else 'bhund,bude->bhune'
+    attn = torch.einsum(attn_einsum_eq, b_q, context)
     return attn.reshape(*q.shape)
 
 class SelfAttention(nn.Module):
