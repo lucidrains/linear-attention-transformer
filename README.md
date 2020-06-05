@@ -32,8 +32,8 @@ model = LinearAttentionTransformerLM(
     ff_chunks = 2       # feedforward chunking, from Reformer paper 
 ).cuda()
 
-x = torch.randint(0, 20000, (1, 2048)).cuda()
-model(x) # (1, 2048, 512)
+x = torch.randint(0, 20000, (1, 8192)).cuda()
+model(x) # (1, 8192, 512)
 ```
 
 ## Citations
