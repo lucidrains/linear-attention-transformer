@@ -39,6 +39,10 @@ x = torch.randint(0, 20000, (1, 8192)).cuda()
 model(x) # (1, 8192, 512)
 ```
 
+## Initial Results
+
+<img src="./results.png" width="500px"/>
+
 ## Citations
 
 ```bibtex
