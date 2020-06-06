@@ -1,13 +1,21 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from functools import partial
+from operator import mul
+from functools import partial, reduce
 from linear_attention_transformer.reversible import ReversibleSequence, SequentialSequence
+
+# constants
+
+DEFAULT_PSI = lambda x: F.elu(x) + 1
 
 # helper functions
 
 def default(value, d):
     return d if value is None else value
+
+def safe_div(n, d, eps = 1e-6):
+    return n.div_(d + eps)
 
 def merge_dims(ind_from, ind_to, tensor):
     shape = list(tensor.shape)
@@ -164,24 +172,36 @@ class LocalAttention(nn.Module):
 
 # feedforward
 
+class GELU_(nn.Module):
+    def forward(self, x):
+        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+
+GELU = nn.GELU if hasattr(nn, 'GELU') else GELU_
+
 class FeedForward(nn.Module):
-    def __init__(self, dim, mult = 4):
+    def __init__(self, dim, mult = 4, dropout = 0., activation = None, glu = False):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, mult * dim, bias=False),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(dim * mult, dim, bias=False)
-        )
+        activation = default(activation, GELU)
+
+        self.glu = glu
+        self.w1 = nn.Linear(dim, dim * mult * (2 if glu else 1))
+        self.act = activation()
+        self.dropout = nn.Dropout(dropout)
+        self.w2 = nn.Linear(dim * mult, dim)
 
     def forward(self, x, **kwargs):
-        return self.net(x)
+        if not self.glu:
+            x = self.w1(x)
+            x = self.act(x)
+        else:
+            x, v = self.w1(x).chunk(2, dim=-1)
+            x = self.act(x) * v
+
+        x = self.dropout(x)
+        x = self.w2(x)
+        return x
 
 # self attention layer
-
-DEFAULT_PSI = lambda x: F.elu(x) + 1
-
-def safe_div(n, d, eps = 1e-6):
-    return n.div_(d + eps)
 
 def linear_attn(q, k, v, one_kv_head = False):
     q = q.softmax(dim=-1)
@@ -283,6 +303,59 @@ class SelfAttention(nn.Module):
         attn = attn.transpose(1, 2).reshape(b, t, -1)
         return self.to_out(attn)
 
+# embedding
+
+class AxialPositionalEmbedding(nn.Module):
+    def __init__(self, dim, max_seq_len, axial_shape = ()):
+        super().__init__()
+        assert reduce(mul, axial_shape, 1) == max_seq_len, 'axial position shape must multiply up to max sequence length'
+
+        self.dim = dim
+        self.seq_len = max_seq_len
+        self.shape = axial_shape
+
+        self.weights = ParameterList(self, 'weights', len(axial_shape))
+
+        for ind, shape in enumerate(self.shape):
+            ax_shape = [1] * len(self.shape)
+            ax_shape[ind] = shape
+            ax_shape = (1, *ax_shape, dim)
+            ax_emb = nn.Parameter(torch.zeros(ax_shape).normal_(0, 1))
+            self.weights.append(ax_emb)
+
+    def forward(self, x):
+        b, t, e = x.shape
+        embs = []
+
+        for ax_emb in self.weights.to_list():
+            expand_shape = (b, *self.shape, self.dim)
+            emb = ax_emb.expand(expand_shape).reshape(b, self.seq_len, self.dim)
+            embs.append(emb)
+
+        pos_emb = sum(embs)
+        return pos_emb[:, :t].to(x)
+
+# a mock parameter list object until below issue is resolved
+# https://github.com/pytorch/pytorch/issues/36035
+class ParameterList(object):
+    def __init__(self, kls, prefix, length):
+        self.ind = 0
+        self.kls = kls
+        self.prefix = prefix
+        self.length = length
+
+    def _keyname(self, prefix, ind):
+        return f'{prefix}_{ind}'
+
+    def append(self, x):
+        setattr(self.kls, self._keyname(self.prefix, self.ind), x)
+        self.ind += 1
+
+    def to_list(self):
+        return [getattr(self.kls, self._keyname(self.prefix, i)) for i in range(self.length)]
+
+# transformer and language model classes
+
 class LinearAttentionTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1, reversible = False, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128):
         super().__init__()
@@ -309,16 +382,17 @@ class LinearAttentionTransformer(nn.Module):
 
 class LinearAttentionTransformerLM(nn.Module):
     def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128):
+        assert (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
+        self.axial_pos_emb = AxialPositionalEmbedding(dim, max_seq_len, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
         self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
-        x = x + self.pos_emb(x).type(x.type())
+        x = x + self.axial_pos_emb(x).type(x.type())
         x = self.transformer(x, **kwargs)
         return self.out(x)
