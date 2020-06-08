@@ -40,6 +40,61 @@ x = torch.randint(0, 20000, (1, 8192)).cuda()
 model(x) # (1, 8192, 512)
 ```
 
+Transformer
+
+```python
+import torch
+from linear_attention_transformer import LinearAttentionTransformer
+
+model = LinearAttentionTransformer(
+    dim = 512,
+    heads = 8,
+    depth = 1,
+    max_seq_len = 8192,
+    n_local_attn_heads = 4
+).cuda()
+
+x = torch.randn(1, 8192, 512).cuda()
+model(x) # (1, 8192, 512)
+```
+
+Encoder / decoder
+
+```python
+import torch
+from linear_attention_transformer import LinearAttentionTransformerLM
+
+enc = LinearAttentionTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    heads = 8,
+    depth = 6,
+    max_seq_len = 4096,
+    one_kv_head = True,
+    reversible = True,
+    n_local_attn_heads = 4,
+    return_embeddings = True
+).cuda()
+
+dec = LinearAttentionTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    heads = 8,
+    depth = 6,
+    causal = True,
+    max_seq_len = 4096,
+    one_kv_head = True,
+    reversible = True,
+    receives_context = True,
+    n_local_attn_heads = 4
+).cuda()
+
+src = torch.randint(0, 20000, (1, 4096)).cuda()
+tgt = torch.randint(0, 20000, (1, 4096)).cuda()
+context = enc(src)
+dec(tgt, context = context)
+```
+
 ## Images
 
 This repository also contains a concise implementation of this efficient attention for images
@@ -57,10 +112,6 @@ attn =ImageLinearAttention(
 img = torch.randn(1, 32, 256, 256)
 attn(img) # (1, 32, 256, 256)
 ```
-
-## Initial Results
-
-<img src="./results.png" width="500px"/>
 
 ## Citations
 
