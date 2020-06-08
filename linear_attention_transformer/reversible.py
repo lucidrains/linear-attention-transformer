@@ -171,4 +171,4 @@ class ReversibleSequence(nn.Module):
             blocks, args = map(lambda ind: list(map(itemgetter(ind), layers_and_args)), (0, 1))
 
         out =  _ReversibleFunction.apply(x, blocks, args)
-        return torch.stack(out.chunk(2, dim=-1)).sum(dim=0)
+        return torch.stack(out.chunk(2, dim=-1)).mean(dim=0)
