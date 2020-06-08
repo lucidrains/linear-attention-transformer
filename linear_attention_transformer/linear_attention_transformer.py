@@ -310,7 +310,7 @@ class LinearAttentionTransformer(nn.Module):
         for _, local_heads in zip(range(depth), n_local_attn_heads):
             layer = nn.ModuleList([
                 PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn)),
-                Chunk(ff_chunks, PreNorm(dim, FeedForward(dim)), along_dim = 1)
+                PreNorm(dim, Chunk(ff_chunks, FeedForward(dim), along_dim = 1))
             ])
             layers.append(layer)
 
@@ -321,7 +321,7 @@ class LinearAttentionTransformer(nn.Module):
         return self.layers(x, **kwargs)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, return_embeddings = False):
         assert (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -329,7 +329,7 @@ class LinearAttentionTransformerLM(nn.Module):
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.axial_pos_emb = AxialPositionalEmbedding(dim, max_seq_len, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
         self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn)
-        self.out = nn.Linear(dim, num_tokens)
+        self.out = nn.Linear(dim, num_tokens) if not return_embeddings else nn.Identity()
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
