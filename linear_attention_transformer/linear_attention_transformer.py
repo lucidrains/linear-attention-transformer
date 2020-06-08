@@ -86,7 +86,7 @@ def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
     return torch.cat(tensors, dim=dim)
 
 class LocalAttention(nn.Module):
-    def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = None, dropout = 0., shared_qk = False):
+    def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = None, dropout = 0.):
         super().__init__()
         self.look_forward = default(look_forward, 0 if causal else 1)
         assert not (causal and self.look_forward > 0), 'you cannot look forward if causal'
@@ -94,7 +94,6 @@ class LocalAttention(nn.Module):
         self.bucket_size = bucket_size
         self.causal = causal
         self.look_backward = look_backward
-        self.shared_qk = shared_qk
 
         self.heads = heads
         self.dropout = nn.Dropout(dropout)
@@ -106,12 +105,10 @@ class LocalAttention(nn.Module):
         q, k, v = map(merge_into_batch, (q, k, v))
 
         b, t, e, h, device, dtype = *q.shape, self.heads, q.device, q.dtype
-        bucket_size, causal, look_backward, look_forward, shared_qk = self.bucket_size, self.causal, self.look_backward, self.look_forward, self.shared_qk
+        bucket_size, causal, look_backward, look_forward = self.bucket_size, self.causal, self.look_backward, self.look_forward
+        assert (t % bucket_size) == 0, f'sequence length {t} must be divisible by bucket size {bucket_size} for local attention'
 
         buckets = t // bucket_size
-
-        if shared_qk:
-            k = F.normalize(k, 2, dim=-1).type(q.type())
 
         ticker = torch.arange(t, device=device, dtype=dtype)[None, :]
         b_t = ticker.reshape(1, buckets, bucket_size)
@@ -129,11 +126,6 @@ class LocalAttention(nn.Module):
         dots = torch.einsum('bhie,bhje->bhij', bq, bk) * (e ** -0.5)
 
         mask_value = max_neg_value(dots)
-
-        if shared_qk:
-            mask = bq_t[:, :, :, None] == bq_k[:, :, None, :]
-            dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
-            del mask
 
         if causal:
             mask = bq_t[:, :, :, None] < bq_k[:, :, None, :]
@@ -209,6 +201,7 @@ def linear_attn(q, k, v, one_kv_head = False):
 def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False, bucket_size = None):
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
+    assert (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
 
     q = q.softmax(dim=-1)
     k = psi(k)
