@@ -31,7 +31,6 @@ class Autopadder(nn.Module):
         is_lm = isinstance(net, LinearAttentionTransformerLM)
         transformer = find_module(net, LinearAttentionTransformer)
         self.pad_to = transformer.pad_to_multiple
-
         self.pad_dim = -1 if is_lm else -2
         self.pad_left = pad_left
 

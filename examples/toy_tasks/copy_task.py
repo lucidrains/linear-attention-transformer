@@ -23,7 +23,7 @@ def cycle():
         src = torch.randint(2, NUM_TOKENS, (BATCH_SIZE, ENC_SEQ_LEN)).long().cuda()
         tgt = torch.cat((prefix, src, src), 1)
         src_mask = torch.ones(BATCH_SIZE, ENC_SEQ_LEN).bool().cuda()
-        tgt_mask = torch.ones(BATCH_SIZE, tgt.shape[1]).bool().cuda()
+        tgt_mask = torch.ones(BATCH_SIZE, tgt.shape[1] - 1).bool().cuda()
         yield (src, tgt, src_mask, tgt_mask)
 
 # instantiate model
@@ -45,6 +45,7 @@ dec = LinearAttentionTransformerLM(
     heads = 8,
     depth = 3,
     causal = True,
+    blindspot_size = 2,             # a small blindspot greatly saves on memory
     max_seq_len = DEC_SEQ_LEN,
     one_kv_head = True,
     receives_context = True
@@ -62,8 +63,8 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     enc.train(), dec.train()
     src, tgt, src_mask, tgt_mask = next(cycle())
 
-    context = enc(src)
-    loss = dec(tgt, context = context, return_loss = True)
+    context = enc(src, input_mask = src_mask)
+    loss = dec(tgt, context = context, input_mask = tgt_mask, context_mask = src_mask, return_loss = True)
     loss.backward()
     print(loss.item())
 

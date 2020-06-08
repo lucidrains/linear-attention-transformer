@@ -190,7 +190,11 @@ class FeedForward(nn.Module):
 
 # self attention layer
 
-def linear_attn(q, k, v, one_kv_head = False):
+def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
+    if kv_mask is not None:
+        mask_value = max_neg_value(q)
+        k = k.masked_fill_(~kv_mask[:, :, None], mask_value)
+
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
 
@@ -202,13 +206,16 @@ def linear_attn(q, k, v, one_kv_head = False):
 
     return attn.reshape(*q.shape)
 
-def causal_linear_attn(q, k, v, psi = DEFAULT_PSI, one_kv_head = False, bucket_size = None):
+def causal_linear_attn(q, k, v, kv_mask = None, psi = DEFAULT_PSI, one_kv_head = False, bucket_size = None):
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
     assert (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
 
     q = q.softmax(dim=-1)
     k = psi(k)
+
+    if kv_mask is not None:
+        k = k.masked_fill_(~kv_mask[:, :, None], 0.)
 
     bucket_fn = lambda x: x.reshape(*x.shape[:-2], -1, bucket_size, e)
     b_q, b_k, b_v = map(bucket_fn, (q, k, v))
@@ -258,7 +265,7 @@ class SelfAttention(nn.Module):
         self.to_out = nn.Linear(dim, dim)
 
 
-    def forward(self, x, input_mask = None, context = None, **kwargs):
+    def forward(self, x, input_mask = None, context = None, context_mask = None, **kwargs):
         assert not (self.receives_context and context is None), 'context must be supplied if self attention is in receives context mode'
 
         if not self.receives_context:
@@ -292,7 +299,8 @@ class SelfAttention(nn.Module):
             out.append(local_out)
 
         if has_global:
-            global_out = self.global_attn_fn(q, k, v, one_kv_head = self.one_kv_head)
+            kv_mask = input_mask if not self.receives_context else context_mask
+            global_out = self.global_attn_fn(q, k, v, one_kv_head = self.one_kv_head, kv_mask = kv_mask)
             out.append(global_out)
 
         attn = torch.cat(out, dim=1)

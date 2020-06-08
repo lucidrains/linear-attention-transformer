@@ -90,9 +90,13 @@ dec = LinearAttentionTransformerLM(
 ).cuda()
 
 src = torch.randint(0, 20000, (1, 4096)).cuda()
+src_mask = torch.ones_like(src).bool().cuda()
+
 tgt = torch.randint(0, 20000, (1, 4096)).cuda()
-context = enc(src)
-dec(tgt, context = context)
+tgt_mask = torch.ones_like(tgt).bool().cuda()
+
+context = enc(src, input_mask = src_mask)
+logits = dec(tgt, context = context, input_mask = tgt_mask, context_mask = src_mask)
 ```
 
 ## Images
