@@ -33,10 +33,29 @@ model = LinearAttentionTransformerLM(
     one_kv_head = True,             # use one key/value head to save on memory / compute
     reversible = True,              # use reversible nets, from Reformer paper
     ff_chunks = 2,                  # feedforward chunking, from Reformer paper
+    psi_fn = lambda x: x.sigmoid()  # allows you to modify the psi function used in 'Transformer is RNN' paper
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).cuda()
 model(x) # (1, 8192, 512)
+```
+
+## Images
+
+This repository also contains a concise implementation of this efficient attention for images
+
+```python
+import torch
+from linear_attention_transformer.images import ImageLinearAttention
+
+attn =ImageLinearAttention(
+  chan = 32,
+  heads = 8,
+  key_dim = 64       # can be decreased to 32 for more memory savings
+)
+
+img = torch.randn(1, 32, 256, 256)
+attn(img) # (1, 32, 256, 256)
 ```
 
 ## Initial Results

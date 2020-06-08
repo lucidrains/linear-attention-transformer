@@ -1,2 +1,3 @@
 from linear_attention_transformer.linear_attention_transformer import LinearAttentionTransformer, LinearAttentionTransformerLM
 from linear_attention_transformer.autoregressive_wrapper import AutoregressiveWrapper
+from linear_attention_transformer.images import ImageLinearAttention
