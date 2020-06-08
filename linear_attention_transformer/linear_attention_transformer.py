@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 import math
 from operator import mul
+from fractions import gcd
 from functools import partial, reduce
 
 from axial_positional_embedding import AxialPositionalEmbedding
@@ -19,6 +20,9 @@ def default(value, d):
 
 def safe_div(n, d, eps = 1e-6):
     return n.div_(d + eps)
+
+def lcm(*numbers):
+    return int(reduce(lambda x, y: (x * y) / gcd(x, y), numbers, 1))
 
 def merge_dims(ind_from, ind_to, tensor):
     shape = list(tensor.shape)
@@ -333,6 +337,11 @@ class LinearAttentionTransformer(nn.Module):
         context_route_map = {'context': route_context, 'context_mask': route_context} if receives_context else {}
         attn_route_map = {'input_mask': route_attn}
         self.layers = execute_type(layers, args_route = {**attn_route_map, **context_route_map})
+
+        self.pad_to_multiple = lcm(
+            1 if not causal else blindspot_size,
+            1 if all([(h == 0) for h in n_local_attn_heads]) else local_attn_window_size
+        )
 
     def forward(self, x, **kwargs):
         return self.layers(x, **kwargs)
