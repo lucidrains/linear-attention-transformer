@@ -1,8 +1,11 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+import math
 from operator import mul
 from functools import partial, reduce
+
+from axial_positional_embedding import AxialPositionalEmbedding
 from linear_attention_transformer.reversible import ReversibleSequence, SequentialSequence
 
 # constants
