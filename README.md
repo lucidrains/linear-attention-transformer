@@ -1,6 +1,6 @@
 ## Linear Attention Transformer
 
-<img src="./linear-attention.png"/>
+<img src="./linear-attention.png" width="700px" />
 
 [![PyPI version](https://badge.fury.io/py/linear-attention-transformer.svg)](https://badge.fury.io/py/linear-attention-transformer)
 
