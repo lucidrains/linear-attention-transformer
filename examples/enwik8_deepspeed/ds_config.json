@@ -16,7 +16,7 @@
     }
   },
   "fp16": {
-    "enabled": true
+    "enabled": false
   },
   "scheduler": {
     "type": "WarmupLR",
@@ -26,6 +26,6 @@
       "warmup_num_steps": 1000
     }
   },
-  "zero_optimization": true,
+  "zero_optimization": false,
   "wall_clock_breakdown": false
 }
