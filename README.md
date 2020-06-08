@@ -1,4 +1,4 @@
-## Linear Attention Transformer (wip)
+## Linear Attention Transformer
 
 <img src="./linear-attention.png"/>
 
