@@ -32,30 +32,11 @@ def expand_dim(t, dim, k):
     expand_shape[dim] = k
     return t.expand(*expand_shape)
 
-def scatter_mean(src, t, index, dim, eps = 1e-5):
-    numer = src.scatter_add(dim, index, t)
-    denom = src.scatter_add(dim, index, torch.ones_like(t))
-    return numer / (denom + eps)
-
-def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
-    t = x.shape[1]
-    dims = (len(x.shape) - dim) * (0, 0)
-    padded_x = F.pad(x, (*dims, backward, forward), value= pad_value)
-    tensors = [padded_x[:, ind:(ind + t), ...] for ind in range(forward + backward + 1)]
-    return torch.cat(tensors, dim=dim)
-
 def split_at_index(dim, index, t):
     pre_slices = (slice(None),) * dim
     l = (*pre_slices, slice(None, index))
     r = (*pre_slices, slice(index, None))
     return t[l], t[r]
-
-def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
-    t = x.shape[1]
-    dims = (len(x.shape) - dim) * (0, 0)
-    padded_x = F.pad(x, (*dims, backward, forward), value= pad_value)
-    tensors = [padded_x[:, ind:(ind + t), ...] for ind in range(forward + backward + 1)]
-    return torch.cat(tensors, dim=dim)
 
 def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
@@ -96,6 +77,13 @@ class AbsolutePositionalEmbedding(nn.Module):
         return self.emb(t)
 
 # local attention
+
+def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
+    t = x.shape[1]
+    dims = (len(x.shape) - dim) * (0, 0)
+    padded_x = F.pad(x, (*dims, backward, forward), value= pad_value)
+    tensors = [padded_x[:, ind:(ind + t), ...] for ind in range(forward + backward + 1)]
+    return torch.cat(tensors, dim=dim)
 
 class LocalAttention(nn.Module):
     def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = None, dropout = 0., shared_qk = False):
@@ -305,57 +293,6 @@ class SelfAttention(nn.Module):
         attn = torch.cat(out, dim=1)
         attn = attn.transpose(1, 2).reshape(b, t, -1)
         return self.to_out(attn)
-
-# embedding
-
-class AxialPositionalEmbedding(nn.Module):
-    def __init__(self, dim, max_seq_len, axial_shape = ()):
-        super().__init__()
-        assert reduce(mul, axial_shape, 1) == max_seq_len, 'axial position shape must multiply up to max sequence length'
-
-        self.dim = dim
-        self.seq_len = max_seq_len
-        self.shape = axial_shape
-
-        self.weights = ParameterList(self, 'weights', len(axial_shape))
-
-        for ind, shape in enumerate(self.shape):
-            ax_shape = [1] * len(self.shape)
-            ax_shape[ind] = shape
-            ax_shape = (1, *ax_shape, dim)
-            ax_emb = nn.Parameter(torch.zeros(ax_shape).normal_(0, 1))
-            self.weights.append(ax_emb)
-
-    def forward(self, x):
-        b, t, e = x.shape
-        embs = []
-
-        for ax_emb in self.weights.to_list():
-            expand_shape = (b, *self.shape, self.dim)
-            emb = ax_emb.expand(expand_shape).reshape(b, self.seq_len, self.dim)
-            embs.append(emb)
-
-        pos_emb = sum(embs)
-        return pos_emb[:, :t].to(x)
-
-# a mock parameter list object until below issue is resolved
-# https://github.com/pytorch/pytorch/issues/36035
-class ParameterList(object):
-    def __init__(self, kls, prefix, length):
-        self.ind = 0
-        self.kls = kls
-        self.prefix = prefix
-        self.length = length
-
-    def _keyname(self, prefix, ind):
-        return f'{prefix}_{ind}'
-
-    def append(self, x):
-        setattr(self.kls, self._keyname(self.prefix, self.ind), x)
-        self.ind += 1
-
-    def to_list(self):
-        return [getattr(self.kls, self._keyname(self.prefix, i)) for i in range(self.length)]
 
 # transformer and language model classes
 
