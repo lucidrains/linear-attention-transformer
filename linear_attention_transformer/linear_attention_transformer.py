@@ -344,7 +344,7 @@ class LinearAttentionTransformerLM(nn.Module):
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.axial_pos_emb = AxialPositionalEmbedding(dim, max_seq_len, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
+        self.axial_pos_emb = AxialPositionalEmbedding(dim, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
         self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn, receives_context = receives_context)
         self.out = nn.Linear(dim, num_tokens) if not return_embeddings else nn.Identity()
 
