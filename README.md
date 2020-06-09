@@ -32,7 +32,9 @@ model = LinearAttentionTransformerLM(
     n_local_attn_heads = 4,         # number of local attention heads for (qk)v attention. this can be a tuple specifying the exact number of local attention heads at that depth
     local_attn_window_size = 128,   # receptive field of the local attention
     reversible = True,              # use reversible nets, from Reformer paper
-    ff_chunks = 2                   # feedforward chunking, from Reformer paper
+    ff_chunks = 2,                  # feedforward chunking, from Reformer paper
+    psi_fn = lambda x: x.sigmoid(), # allows you to modify the psi function used in 'Transformer is RNN' paper
+    attend_axially = False          # will fold the sequence by the local attention window size, and do an extra strided attention followed by a feedforward with the cheap q(kv) attention
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).cuda()

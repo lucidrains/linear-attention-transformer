@@ -19,6 +19,9 @@ DEFAULT_PSI = lambda x: F.elu(x) + 1
 def default(value, d):
     return d if value is None else value
 
+def cast_tuple(val):
+    return (val,) if not isinstance(val, tuple) else val
+        
 def safe_div(n, d, eps = 1e-6):
     return n.div_(d + eps)
 
@@ -194,7 +197,8 @@ class FeedForward(nn.Module):
 def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
     if kv_mask is not None:
         mask_value = max_neg_value(q)
-        k = k.masked_fill_(~kv_mask[:, :, None], mask_value)
+        mask = kv_mask[:, :, None] if one_kv_head else kv_mask[:, None, :, None]
+        k = k.masked_fill_(~mask, mask_value)
 
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
@@ -216,7 +220,8 @@ def causal_linear_attn(q, k, v, kv_mask = None, psi = DEFAULT_PSI, one_kv_head =
     k = psi(k)
 
     if kv_mask is not None:
-        k = k.masked_fill_(~kv_mask[:, :, None], 0.)
+        mask = kv_mask[:, :, None] if one_kv_head else kv_mask[:, None, :, None]
+        k = k.masked_fill_(~mask, 0.)
 
     bucket_fn = lambda x: x.reshape(*x.shape[:-2], -1, bucket_size, e)
     b_q, b_k, b_v = map(bucket_fn, (q, k, v))
@@ -310,8 +315,25 @@ class SelfAttention(nn.Module):
 
 # transformer and language model classes
 
+class FoldAxially(nn.Module):
+    def __init__(self, axial_dim, fn):
+        super().__init__()
+        self.fn = fn
+        self.axial_dim = axial_dim
+    def forward(self, x, input_mask = None, **kwargs):
+        b, t, d, ax = *x.shape, self.axial_dim
+        x = x.reshape(b, -1, ax, d).transpose(1, 2).reshape(b * ax, -1, d)
+
+        mask = None
+        if input_mask is not None:
+            mask = input_mask.reshape(b, -1, ax).transpose(1, 2).reshape(b * ax, -1)
+
+        x = self.fn(x, input_mask = mask, **kwargs)
+        x = x.reshape(b, ax, -1, d).transpose(1, 2).reshape(b, t, d)
+        return x
+
 class LinearAttentionTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1, reversible = False, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, bucket_size = 64, causal = False, one_kv_head = False, ff_chunks = 1, reversible = False, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, receives_context = False, attend_axially = False, pkm_layers = tuple(), pkm_num_keys = 128):
         super().__init__()
         if type(n_local_attn_heads) is not tuple:
             n_local_attn_heads = tuple([n_local_attn_heads] * depth)
@@ -321,35 +343,35 @@ class LinearAttentionTransformer(nn.Module):
 
         layers = nn.ModuleList([])
 
-        def cast_tuple(val):
-            return (val,) if not isinstance(val, tuple) else val
-
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
             layer_num = ind + 1
             use_pkm = layer_num in cast_tuple(pkm_layers)
 
             parallel_net = Chunk(ff_chunks, FeedForward(dim), along_dim = 1) if not use_pkm else PKM(dim)
 
-            layer = nn.ModuleList([
+            layers.append(nn.ModuleList([
                 PreNorm(dim, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn)),
                 PreNorm(dim, parallel_net)
-            ])
-            layers.append(layer)
+            ]))
 
-            if not receives_context:
-                continue
+            if attend_axially:
+                layers.append(nn.ModuleList([
+                    PreNorm(dim, FoldAxially(local_attn_window_size, SelfAttention(dim, heads, causal, one_kv_head = one_kv_head, psi_fn = psi_fn))),
+                    PreNorm(dim, Chunk(ff_chunks, FeedForward(dim), along_dim = 1))
+                ]))
 
-            layer = nn.ModuleList([
-                PreNorm(dim, SelfAttention(dim, heads, one_kv_head = one_kv_head, psi_fn = psi_fn, receives_context = True)),
-                PreNorm(dim, Chunk(ff_chunks, FeedForward(dim), along_dim = 1))
-            ])
-            layers.append(layer)
+            if receives_context:
+                layers.append(nn.ModuleList([
+                    PreNorm(dim, SelfAttention(dim, heads, one_kv_head = one_kv_head, psi_fn = psi_fn, receives_context = True)),
+                    PreNorm(dim, Chunk(ff_chunks, FeedForward(dim), along_dim = 1))
+                ]))
 
         execute_type = ReversibleSequence if reversible else SequentialSequence
 
+        axial_layer = ((True, False),) if attend_axially else tuple()
         attn_context_layer = ((True, False),) if receives_context else tuple()
-        route_attn = ((True, False), *attn_context_layer) * depth
-        route_context = ((False, False), *attn_context_layer) * depth
+        route_attn = ((True, False), *axial_layer, *attn_context_layer) * depth
+        route_context = ((False, False), *axial_layer, *attn_context_layer) * depth
 
         context_route_map = {'context': route_context, 'context_mask': route_context} if receives_context else {}
         attn_route_map = {'input_mask': route_attn}
@@ -364,14 +386,14 @@ class LinearAttentionTransformer(nn.Module):
         return self.layers(x, **kwargs)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, return_embeddings = False, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, return_embeddings = False, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128, attend_axially = False):
         assert (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.axial_pos_emb = AxialPositionalEmbedding(dim, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
-        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn, receives_context = receives_context, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys)
+        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn, receives_context = receives_context, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys, attend_axially = attend_axially)
         self.out = nn.Linear(dim, num_tokens) if not return_embeddings else nn.Identity()
 
     def forward(self, x, **kwargs):

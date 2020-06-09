@@ -3,7 +3,11 @@ from setuptools import setup, find_packages
 setup(
   name = 'linear_attention_transformer',
   packages = find_packages(exclude=['examples']),
+<<<<<<< HEAD
   version = '0.5.1',
+=======
+  version = '0.6.0',
+>>>>>>> add ability to do strided attention with cheap global attention after main attention layer
   license='MIT',
   description = 'Linear Attention Transformer',
   author = 'Phil Wang',
