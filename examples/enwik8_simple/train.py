@@ -1,5 +1,6 @@
 from linear_attention_transformer import LinearAttentionTransformerLM
 from linear_attention_transformer.autoregressive_wrapper import AutoregressiveWrapper
+from product_key_memory import fetch_optimizer_parameters
 
 import random
 import tqdm
@@ -43,7 +44,8 @@ model = LinearAttentionTransformerLM(
     max_seq_len = SEQ_LEN,
     heads = 8,
     causal = True,
-    one_kv_head = True
+    one_kv_head = True,
+    pkm_layers = (4,)
 )
 
 model = AutoregressiveWrapper(model)
@@ -77,7 +79,8 @@ val_loader    = cycle(DataLoader(val_dataset, batch_size = BATCH_SIZE))
 
 # optimizer
 
-optim = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+parameters = fetch_optimizer_parameters(model)
+optim = torch.optim.Adam(parameters, lr=LEARNING_RATE)
 
 # training
 

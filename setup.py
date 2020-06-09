@@ -13,7 +13,7 @@ setup(
   install_requires=[
       'torch',
       'axial-positional-embedding',
-      'product-key-memory'
+      'product-key-memory>=0.1.5'
   ],
   classifiers=[
       'Development Status :: 4 - Beta',
