@@ -73,6 +73,19 @@ class Chunk(nn.Module):
         chunks = x.chunk(self.chunks, dim = self.dim)
         return torch.cat([self.fn(c, **kwargs) for c in chunks], dim = self.dim)
 
+class ProjectInOut(nn.Module):
+    def __init__(self, fn, dim_in, dim_out, project_out = True):
+        super().__init__()
+        self.fn = fn
+        self.project_in = nn.Linear(dim_in, dim_out)
+        self.project_out = nn.Linear(dim_out, dim_in) if project_out else nn.Identity()
+
+    def forward(self, x, **kwargs):
+        x = self.project_in(x)
+        x = self.fn(x, **kwargs)
+        x = self.project_out(x)
+        return x
+
 # positional embeddings
 
 class AbsolutePositionalEmbedding(nn.Module):
@@ -386,15 +399,20 @@ class LinearAttentionTransformer(nn.Module):
         return self.layers(x, **kwargs)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, return_embeddings = False, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128, attend_axially = False):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, causal = False, emb_dim = None, one_kv_head = False, reversible = False, ff_chunks = 1, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, psi_fn = DEFAULT_PSI, return_embeddings = False, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128, attend_axially = False):
         assert (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         super().__init__()
+        emb_dim = default(emb_dim, dim)
         self.max_seq_len = max_seq_len
 
-        self.token_emb = nn.Embedding(num_tokens, dim)
-        self.axial_pos_emb = AxialPositionalEmbedding(dim, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
+        self.token_emb = nn.Embedding(num_tokens, emb_dim)
+        self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
         self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, causal = causal, one_kv_head = one_kv_head, ff_chunks = ff_chunks, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn, receives_context = receives_context, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys, attend_axially = attend_axially)
-        self.out = nn.Linear(dim, num_tokens) if not return_embeddings else nn.Identity()
+
+        if emb_dim != dim:
+            self.transformer = ProjectInOut(self.transformer, emb_dim, dim, project_out = not return_embeddings)
+
+        self.out = nn.Linear(emb_dim, num_tokens) if not return_embeddings else nn.Identity()
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
