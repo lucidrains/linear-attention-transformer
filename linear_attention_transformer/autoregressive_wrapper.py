@@ -84,6 +84,13 @@ class AutoregressiveWrapper(nn.Module):
         if isinstance(x, torch.Tensor):
             xi = x[:, :-1]
             xo = x[:, 1:]
+
+            # help auto-solve an area of confusion around input masks in auto-regressive
+            # if user supplies a mask that is only off by one from the source sequence, resolve it for them
+            mask = kwargs.pop('input_mask', None)
+            if mask is not None and mask.shape[1] == x.shape[1]:
+                mask = mask[:, :-1]
+                kwargs.update(input_mask = mask)
         else:
             xi = pad(list(map(lambda t: t[:-1], x)))
             xo = pad(list(map(lambda t: t[1:], x)))
