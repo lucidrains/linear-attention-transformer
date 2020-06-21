@@ -27,6 +27,9 @@ model = LinearAttentionTransformerLM(
     depth = 1,
     max_seq_len = 8192,
     causal = True,                  # auto-regressive or not
+    ff_dropout = 0.1,               # dropout for feedforward
+    attn_layer_dropout = 0.1,       # dropout right after self-attention layer
+    attn_dropout = 0.1,             # dropout post-attention
     emb_dim = 128,                  # embedding factorization, to save on memory
     one_kv_head = True,             # use one key/value head to save on memory / compute
     blindspot_size = 64,            # this gives the q(kv) attention a blindspot of 64 tokens back in the causal case, but gives back an order of magnitude return in memory savings. should be paired with local attention of at least a window size of this setting. setting this to 1 will allow for full q(kv) attention of past
@@ -34,6 +37,7 @@ model = LinearAttentionTransformerLM(
     local_attn_window_size = 128,   # receptive field of the local attention
     reversible = True,              # use reversible nets, from Reformer paper
     ff_chunks = 2,                  # feedforward chunking, from Reformer paper
+    ff_glu = True,                  # use GLU variant for feedforward
     psi_fn = lambda x: x.sigmoid(), # allows you to modify the psi function used in 'Transformer is RNN' paper
     attend_axially = False          # will fold the sequence by the local attention window size, and do an extra strided attention followed by a feedforward with the cheap q(kv) attention
 ).cuda()
@@ -163,5 +167,14 @@ attn(img) # (1, 32, 256, 256)
     booktitle   = {International Conference on Learning Representations},
     year        = {2020},
     url         = {https://openreview.net/forum?id=rkgNKkHtvB}
+}
+```
+
+```bibtex
+@misc{shazeer2020glu,
+    title   = {GLU Variants Improve Transformer},
+    author  = {Noam Shazeer},
+    year    = {2020},
+    url     = {https://arxiv.org/abs/2002.05202}
 }
 ```
