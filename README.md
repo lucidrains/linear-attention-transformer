@@ -105,6 +105,42 @@ context = enc(src, input_mask = src_mask)
 logits = dec(tgt, context = context, input_mask = tgt_mask, context_mask = src_mask)
 ```
 
+## Linformer
+
+Linformer is another variant of attention with linear complexity championed by Facebook AI. It only works with non-autoregressive models of a fixed sequence length. If your problem satisfies that criteria, you may choose to try it out.
+
+```python
+from linear_attention_transformer import LinearAttentionTransformerLM, LinformerSettings
+
+enc = LinearAttentionTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    heads = 8,
+    depth = 6,
+    max_seq_len = 4096,
+    one_kv_head = True,
+    linformer_settings = LinformerSettings(k = 256)
+).cuda()
+```
+
+You can also used Linformer for the contextual attention layer, if the contextual keys are of a fixed sequence length.
+
+```python
+from linear_attention_transformer import LinearAttentionTransformerLM, LinformerContextSettings
+
+dec = LinearAttentionTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    heads = 8,
+    depth = 6,
+    max_seq_len = 4096,
+    causal = True,
+    one_kv_head = True,
+    context_linformer_settings = LinformerContextSettings(seq_len = 2048, k = 256),
+    receives_context = True
+).cuda()
+```
+
 ## Images
 
 This repository also contains a concise implementation of this efficient attention for images
@@ -176,5 +212,16 @@ attn(img) # (1, 32, 256, 256)
     author  = {Noam Shazeer},
     year    = {2020},
     url     = {https://arxiv.org/abs/2002.05202}
+}
+```
+
+```bibtex
+@misc{wang2020linformer,
+    title={Linformer: Self-Attention with Linear Complexity},
+    author={Sinong Wang and Belinda Z. Li and Madian Khabsa and Han Fang and Hao Ma},
+    year={2020},
+    eprint={2006.04768},
+    archivePrefix={arXiv},
+    primaryClass={cs.LG}
 }
 ```
