@@ -112,6 +112,8 @@ Linformer is another variant of attention with linear complexity championed by F
 ```python
 from linear_attention_transformer import LinearAttentionTransformerLM, LinformerSettings
 
+settings = LinformerSettings(k = 256)
+
 enc = LinearAttentionTransformerLM(
     num_tokens = 20000,
     dim = 512,
@@ -119,7 +121,7 @@ enc = LinearAttentionTransformerLM(
     depth = 6,
     max_seq_len = 4096,
     one_kv_head = True,
-    linformer_settings = LinformerSettings(k = 256)
+    linformer_settings = settings
 ).cuda()
 ```
 
@@ -127,6 +129,11 @@ You can also used Linformer for the contextual attention layer, if the contextua
 
 ```python
 from linear_attention_transformer import LinearAttentionTransformerLM, LinformerContextSettings
+
+settings = LinformerContextSettings(
+  seq_len = 2048,
+  k = 256
+)
 
 dec = LinearAttentionTransformerLM(
     num_tokens = 20000,
@@ -136,7 +143,7 @@ dec = LinearAttentionTransformerLM(
     max_seq_len = 4096,
     causal = True,
     one_kv_head = True,
-    context_linformer_settings = LinformerContextSettings(seq_len = 2048, k = 256),
+    context_linformer_settings = settings,
     receives_context = True
 ).cuda()
 ```
