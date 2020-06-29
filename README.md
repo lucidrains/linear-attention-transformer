@@ -31,7 +31,6 @@ model = LinearAttentionTransformerLM(
     attn_layer_dropout = 0.1,       # dropout right after self-attention layer
     attn_dropout = 0.1,             # dropout post-attention
     emb_dim = 128,                  # embedding factorization, to save on memory
-    one_kv_head = True,             # use one key/value head to save on memory / compute
     blindspot_size = 64,            # this gives the q(kv) attention a blindspot of 64 tokens back in the causal case, but gives back an order of magnitude return in memory savings. should be paired with local attention of at least a window size of this setting. setting this to 1 will allow for full q(kv) attention of past
     n_local_attn_heads = 4,         # number of local attention heads for (qk)v attention. this can be a tuple specifying the exact number of local attention heads at that depth
     local_attn_window_size = 128,   # receptive field of the local attention
