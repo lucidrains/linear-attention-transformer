@@ -377,7 +377,7 @@ class LinearAttentionTransformer(nn.Module):
             if linformer_settings is None:
                 attn = SelfAttention(dim, heads, causal, one_kv_head = one_kv_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size, psi_fn = psi_fn, dropout = attn_layer_dropout, attn_dropout= attn_dropout)
             else:
-                attn = LinformerSelfAttention(dim, max_seq_len, heads = heads, one_kv_head = one_kv_head, **linformer_settings._asdict())
+                attn = LinformerSelfAttention(dim, max_seq_len, heads = heads, one_kv_head = one_kv_head, dropout = attn_dropout, **linformer_settings._asdict())
 
             layers.append(nn.ModuleList([
                 PreNorm(dim, attn),
@@ -394,7 +394,7 @@ class LinearAttentionTransformer(nn.Module):
                 if context_linformer_settings is None:
                     attn = SelfAttention(dim, heads, one_kv_head = one_kv_head, psi_fn = psi_fn, dropout = attn_layer_dropout, attn_dropout= attn_dropout, receives_context = True)
                 else:
-                    attn = LinformerSelfAttention(dim, heads = heads, one_kv_head = one_kv_head, **context_linformer_settings._asdict())
+                    attn = LinformerSelfAttention(dim, heads = heads, one_kv_head = one_kv_head, dropout = attn_dropout, **context_linformer_settings._asdict())
 
                 layers.append(nn.ModuleList([
                     PreNorm(dim, attn),
