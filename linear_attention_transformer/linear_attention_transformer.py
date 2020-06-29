@@ -42,8 +42,9 @@ def merge_dims(ind_from, ind_to, tensor):
     shape[arr_slice] = [reduce(mul, shape[arr_slice])]
     return tensor.reshape(*shape)
 
-def expand_dim(t, dim, k):
-    t = t.unsqueeze(dim)
+def expand_dim(t, dim, k, unsqueeze=True):
+    if unsqueeze:
+        t = t.unsqueeze(dim)
     expand_shape = [-1] * len(t.shape)
     expand_shape[dim] = k
     return t.expand(*expand_shape)
@@ -276,6 +277,7 @@ class SelfAttention(nn.Module):
         self.psi_fn = psi_fn
         self.receives_context = receives_context
 
+        self.global_attn_heads = heads - n_local_attn_heads
         self.global_attn_fn = linear_attn if not causal else partial(causal_linear_attn, psi=psi_fn, bucket_size = blindspot_size)
 
         self.local_attn_heads = n_local_attn_heads
@@ -283,7 +285,8 @@ class SelfAttention(nn.Module):
 
         self.to_q = nn.Linear(dim, dim, bias = False)
 
-        kv_heads = 1 if one_kv_head else heads
+        kv_heads = (int(self.local_attn_heads > 0) + int(self.global_attn_heads > 0)) if one_kv_head else heads
+
         self.one_kv_head = one_kv_head
         self.kv_heads = kv_heads
         self.to_k = nn.Linear(dim, d_heads * kv_heads, bias = False)
@@ -301,12 +304,10 @@ class SelfAttention(nn.Module):
             q, k, v = (self.to_q(x), self.to_k(context), self.to_v(context))
 
         b, t, e, h, dh = *q.shape, self.heads, self.d_heads
-        merge_heads = lambda x: x.reshape(b, -1, h, dh).transpose(1, 2)
 
-        q = merge_heads(q)
+        merge_heads = lambda x: x.reshape(*x.shape[:2], -1, dh).transpose(1, 2)
 
-        if not self.one_kv_head:
-            k, v = map(merge_heads, (k, v))
+        q, k, v = map(merge_heads, (q, k, v))
 
         out = []
 
@@ -316,8 +317,14 @@ class SelfAttention(nn.Module):
             (lq, q), (lk, k), (lv, v) = map(split_index_fn, (q, k, v))
         else:
             lq, q = split_index_fn(q)
-            lk = expand_dim(k, 1, self.local_attn_heads)
-            lv = expand_dim(v, 1, self.local_attn_heads)
+
+            split_kv_fn = partial(split_at_index, 1, int(self.local_attn_heads > 0))
+            (lk, k), (lv, v) = map(split_kv_fn, (k, v))
+
+            local_expand_heads_fn = lambda t: expand_dim(t, 1, self.local_attn_heads, unsqueeze=False)
+            lk, lv = map(local_expand_heads_fn, (lk, lv))
+
+            k, v = map(lambda t: t.squeeze(1), (k, v))
 
         has_local, has_global = map(lambda x: x.shape[1] > 0, (lq, q))
 
