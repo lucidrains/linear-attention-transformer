@@ -27,6 +27,8 @@ class ImageLinearAttention(nn.Module):
 
         q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
 
+        q, k = map(lambda x: x * (self.key_dim ** -0.25), (q, k))
+
         if context is not None:
             context = context.reshape(b, c, 1, -1)
             ck, cv = self.to_k(context), self.to_v(context)

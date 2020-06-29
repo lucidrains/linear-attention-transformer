@@ -222,6 +222,9 @@ def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
         mask = kv_mask[:, :, None] if one_kv_head else kv_mask[:, None, :, None]
         k = k.masked_fill_(~mask, mask_value)
 
+    dim = q.shape[-1]
+    (q, k) = map(lambda x: x * (dim ** -0.25), (q, k))
+
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
 
@@ -237,6 +240,8 @@ def causal_linear_attn(q, k, v, kv_mask = None, psi = DEFAULT_PSI, one_kv_head =
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
     assert (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
+
+    (q, k) = map(lambda x: x * (e ** -0.25), (q, k))
 
     q = q.softmax(dim=-1)
     k = psi(k)
