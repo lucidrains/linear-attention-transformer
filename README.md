@@ -173,7 +173,7 @@ attn(img) # (1, 32, 256, 256)
   title     = {Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention},
   booktitle = {Proceedings of the International Conference on Machine Learning (ICML)},
   year      = {2020},
-  note      = {(to appear)}
+  url       = {https://arxiv.org/abs/2006.16236}
 }
 ```
 
