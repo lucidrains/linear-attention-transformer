@@ -7,7 +7,9 @@ from fractions import gcd
 from collections import namedtuple
 from functools import partial, reduce
 
+from local_attention import LocalAttention
 from linformer import LinformerSelfAttention
+
 from product_key_memory import PKM
 from axial_positional_embedding import AxialPositionalEmbedding
 from linear_attention_transformer.reversible import ReversibleSequence, SequentialSequence
@@ -105,83 +107,6 @@ class AbsolutePositionalEmbedding(nn.Module):
     def forward(self, x):
         t = torch.arange(x.shape[1], device=x.device)
         return self.emb(t)
-
-# local attention
-
-def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
-    t = x.shape[1]
-    dims = (len(x.shape) - dim) * (0, 0)
-    padded_x = F.pad(x, (*dims, backward, forward), value= pad_value)
-    tensors = [padded_x[:, ind:(ind + t), ...] for ind in range(forward + backward + 1)]
-    return torch.cat(tensors, dim=dim)
-
-class LocalAttention(nn.Module):
-    def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = None, dropout = 0.):
-        super().__init__()
-        self.look_forward = default(look_forward, 0 if causal else 1)
-        assert not (causal and self.look_forward > 0), 'you cannot look forward if causal'
-
-        self.bucket_size = bucket_size
-        self.causal = causal
-        self.look_backward = look_backward
-
-        self.heads = heads
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, q, k, v, input_mask = None):
-        shape = q.shape
-
-        merge_into_batch = lambda t: t.reshape(-1, *t.shape[-2:])
-        q, k, v = map(merge_into_batch, (q, k, v))
-
-        b, t, e, h, device, dtype = *q.shape, self.heads, q.device, q.dtype
-        bucket_size, causal, look_backward, look_forward = self.bucket_size, self.causal, self.look_backward, self.look_forward
-        assert (t % bucket_size) == 0, f'sequence length {t} must be divisible by bucket size {bucket_size} for local attention'
-
-        buckets = t // bucket_size
-
-        ticker = torch.arange(t, device=device, dtype=dtype)[None, :]
-        b_t = ticker.reshape(1, buckets, bucket_size)
-
-        bucket_fn = lambda t: t.reshape(b, buckets, bucket_size, -1)
-        bq, bk, bv = map(bucket_fn, (q, k, v))
-
-        look_around_kwargs = {'backward': look_backward, 'forward': look_forward}
-        bk = look_around(bk, **look_around_kwargs)
-        bv = look_around(bv, **look_around_kwargs)
-
-        bq_t = b_t
-        bq_k = look_around(b_t, **look_around_kwargs)
-
-        dots = torch.einsum('bhie,bhje->bhij', bq, bk) * (e ** -0.5)
-
-        mask_value = max_neg_value(dots)
-
-        if causal:
-            mask = bq_t[:, :, :, None] < bq_k[:, :, None, :]
-            dots.masked_fill_(mask, mask_value)
-            del mask
-
-        mask = bq_k[:, :, None, :] == -1
-        dots.masked_fill_(mask, mask_value)
-        del mask
-
-        if input_mask is not None:
-            h = b // input_mask.shape[0]
-            input_mask = input_mask.reshape(-1, buckets, bucket_size)
-            mq = mk = input_mask
-            mk = look_around(mk, pad_value=False, **look_around_kwargs)
-            mask = (mq[:, :, :, None] * mk[:, :, None, :])
-            mask = merge_dims(0, 1, expand_dim(mask, 1, h))
-            dots.masked_fill_(~mask, mask_value)
-            del mask
-
-        attn = dots.softmax(dim=-1)
-        attn = self.dropout(attn)
-
-        out = torch.einsum('bhij,bhje->bhie', attn, bv)
-        out = out.reshape(*shape)
-        return out
 
 # feedforward
 
@@ -286,7 +211,7 @@ class SelfAttention(nn.Module):
         self.global_attn_fn = linear_attn if not causal else partial(causal_linear_attn, psi=psi_fn, bucket_size = blindspot_size)
 
         self.local_attn_heads = n_local_attn_heads
-        self.local_attn  = LocalAttention(local_attn_window_size, n_local_attn_heads, d_heads, causal = causal, dropout = attn_dropout)
+        self.local_attn  = LocalAttention(local_attn_window_size, causal = causal, dropout = attn_dropout)
 
         self.to_q = nn.Linear(dim, dim, bias = False)
 
