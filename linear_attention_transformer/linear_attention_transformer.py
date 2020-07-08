@@ -142,13 +142,15 @@ class FeedForward(nn.Module):
 # self attention layer
 
 def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
+    dim = q.shape[-1]
+    (q, k) = map(lambda x: x * (dim ** -0.25), (q, k))
+
     if kv_mask is not None:
         mask_value = max_neg_value(q)
         mask = kv_mask[:, :, None] if one_kv_head else kv_mask[:, None, :, None]
         k = k.masked_fill_(~mask, mask_value)
-
-    dim = q.shape[-1]
-    (q, k) = map(lambda x: x * (dim ** -0.25), (q, k))
+        v = v.masked_fill_(~mask, 0.)
+        del mask
 
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
@@ -174,6 +176,8 @@ def causal_linear_attn(q, k, v, kv_mask = None, psi = DEFAULT_PSI, one_kv_head =
     if kv_mask is not None:
         mask = kv_mask[:, :, None] if one_kv_head else kv_mask[:, None, :, None]
         k = k.masked_fill_(~mask, 0.)
+        v = v.masked_fill_(~mask, 0.)
+        del mask
 
     bucket_fn = lambda x: x.reshape(*x.shape[:-2], -1, bucket_size, e)
     b_q, b_k, b_v = map(bucket_fn, (q, k, v))

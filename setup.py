@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'linear_attention_transformer',
   packages = find_packages(exclude=['examples']),
-  version = '0.10.2',
+  version = '0.10.3',
   license='MIT',
   description = 'Linear Attention Transformer',
   author = 'Phil Wang',
