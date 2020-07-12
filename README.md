@@ -31,13 +31,14 @@ model = LinearAttentionTransformerLM(
     attn_layer_dropout = 0.1,       # dropout right after self-attention layer
     attn_dropout = 0.1,             # dropout post-attention
     emb_dim = 128,                  # embedding factorization, to save on memory
+    dim_head = 128,                 # be able to set the dimension of each head, overriding the default (dim / heads)
     blindspot_size = 64,            # this gives the q(kv) attention a blindspot of 64 tokens back in the causal case, but gives back an order of magnitude return in memory savings. should be paired with local attention of at least a window size of this setting. setting this to 1 will allow for full q(kv) attention of past
     n_local_attn_heads = 4,         # number of local attention heads for (qk)v attention. this can be a tuple specifying the exact number of local attention heads at that depth
     local_attn_window_size = 128,   # receptive field of the local attention
     reversible = True,              # use reversible nets, from Reformer paper
     ff_chunks = 2,                  # feedforward chunking, from Reformer paper
     ff_glu = True,                  # use GLU variant for feedforward
-    psi_fn = lambda x: x.sigmoid(), # allows you to modify the psi function used in 'Transformer is RNN' paper
+    psi_fn = torch.nn.Sigmoid(),    # allows you to modify the psi function used in 'Transformer is RNN' paper
     attend_axially = False          # will fold the sequence by the local attention window size, and do an extra strided attention followed by a feedforward with the cheap q(kv) attention
 ).cuda()
 
@@ -223,11 +224,18 @@ attn(img) # (1, 32, 256, 256)
 
 ```bibtex
 @misc{wang2020linformer,
-    title={Linformer: Self-Attention with Linear Complexity},
-    author={Sinong Wang and Belinda Z. Li and Madian Khabsa and Han Fang and Hao Ma},
-    year={2020},
-    eprint={2006.04768},
-    archivePrefix={arXiv},
-    primaryClass={cs.LG}
+    title   = {Linformer: Self-Attention with Linear Complexity},
+    author  = {Sinong Wang and Belinda Z. Li and Madian Khabsa and Han Fang and Hao Ma},
+    year    = {2020},
+    eprint  = {2006.04768}
+}
+```
+
+```bibtex
+@misc{bhojanapalli2020lowrank,
+    title   = {Low-Rank Bottleneck in Multi-head Attention Models},
+    author  = {Srinadh Bhojanapalli and Chulhee Yun and Ankit Singh Rawat and Sashank J. Reddi and Sanjiv Kumar},
+    year    = {2020},
+    eprint  = {2002.07028}
 }
 ```
