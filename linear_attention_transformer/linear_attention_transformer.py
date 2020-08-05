@@ -203,7 +203,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, psi = DEFAULT_PSI, one_kv_head =
 class SelfAttention(nn.Module):
     def __init__(self, dim, heads, causal = False, dim_head = None, one_kv_head = False, psi_fn = DEFAULT_PSI, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, receives_context = False, dropout = 0., attn_dropout = 0.):
         super().__init__()
-        assert (dim % heads) == 0, 'embedding dimension must be divisible by number of heads'
+        assert dim_head or (dim % heads) == 0, 'embedding dimension must be divisible by number of heads'
         d_heads = default(dim_head, dim // heads)
 
         self.heads = heads
