@@ -2,16 +2,17 @@ import torch
 from torch import nn
 
 class ImageLinearAttention(nn.Module):
-    def __init__(self, chan, chan_out = None, kernel_size = 1, padding = 0, stride = 1, key_dim = 64, value_dim = 64, heads = 8):
+    def __init__(self, chan, chan_out = None, kernel_size = 1, padding = 0, stride = 1, key_dim = 64, value_dim = 64, heads = 8, norm_queries = True):
         super().__init__()
-
         self.chan = chan
         chan_out = chan if chan_out is None else chan_out
 
         self.key_dim = key_dim
         self.value_dim = value_dim
         self.heads = heads
-        
+
+        self.norm_queries = norm_queries
+
         conv_kwargs = {'padding': padding, 'stride': stride}
         self.to_q = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
         self.to_k = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
@@ -36,8 +37,10 @@ class ImageLinearAttention(nn.Module):
             k = torch.cat((k, ck), dim=3)
             v = torch.cat((v, cv), dim=3)
 
-        k = k.softmax(dim=2)
-        q = q.softmax(dim=2)
+        k = k.softmax(dim=-1)
+
+        if self.norm_queries:
+            q = q.softmax(dim=-2)
 
         context = torch.einsum('bhdn,bhen->bhde', k, v)
         out = torch.einsum('bhdn,bhde->bhen', q, context)
