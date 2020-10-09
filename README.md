@@ -38,7 +38,6 @@ model = LinearAttentionTransformerLM(
     reversible = True,              # use reversible nets, from Reformer paper
     ff_chunks = 2,                  # feedforward chunking, from Reformer paper
     ff_glu = True,                  # use GLU variant for feedforward
-    psi_fn = torch.nn.Sigmoid(),    # allows you to modify the psi function used in 'Transformer is RNN' paper
     attend_axially = False          # will fold the sequence by the local attention window size, and do an extra strided attention followed by a feedforward with the cheap q(kv) attention
 ).cuda()
 
