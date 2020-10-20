@@ -43,7 +43,7 @@ class Autopadder(nn.Module):
         input_mask = kwargs.get('input_mask')
 
         if input_mask is None:
-            input_mask = torch.full_like(x, True, device=x.device, dtype=torch.bool)
+            input_mask = torch.full((b, t), True, device=x.device, dtype=torch.bool)
 
         x, padding = pad_to_multiple(x, self.pad_to, dim=self.pad_dim, pad_left=self.pad_left)
 
