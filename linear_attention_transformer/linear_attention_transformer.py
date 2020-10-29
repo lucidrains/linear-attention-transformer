@@ -369,10 +369,12 @@ class LinearAttentionTransformerLM(nn.Module):
         if emb_dim != dim:
             self.transformer = ProjectInOut(self.transformer, emb_dim, dim, project_out = not return_embeddings)
 
+        self.norm = nn.LayerNorm(dim)
         self.out = nn.Linear(emb_dim, num_tokens) if not return_embeddings else nn.Identity()
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
         x = x + self.axial_pos_emb(x).type(x.type())
         x = self.transformer(x, **kwargs)
+        x = self.norm(x)
         return self.out(x)
