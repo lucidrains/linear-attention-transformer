@@ -11,9 +11,9 @@ NUM_BATCHES = int(1e5)
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
 GENERATE_EVERY  = 100
-NUM_TOKENS = 256 + 2
-ENC_SEQ_LEN = 512
-DEC_SEQ_LEN = 1024
+NUM_TOKENS = 16 + 2
+ENC_SEQ_LEN = 32
+DEC_SEQ_LEN = 64
 
 # helpers
 
@@ -34,7 +34,6 @@ enc = LinearAttentionTransformerLM(
     heads = 8,
     depth = 1,
     max_seq_len = ENC_SEQ_LEN,
-    n_local_attn_heads = 4,
     one_kv_head = True,
     return_embeddings = True
 ).cuda()
