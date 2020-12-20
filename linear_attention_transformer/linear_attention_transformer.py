@@ -166,6 +166,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
     (q, k) = map(lambda x: x * (e ** -0.25), (q, k))
 
     q = q.softmax(dim=-1)
+    k = k - k.max(dim=-2, keepdims=True).values
     k = torch.exp(k).type(dtype).clone()
 
     if kv_mask is not None:
