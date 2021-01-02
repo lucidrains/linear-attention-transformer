@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 import math
 from operator import mul
-from fractions import gcd
+from math import gcd
 from collections import namedtuple
 from functools import partial, reduce
 
@@ -31,7 +31,7 @@ def safe_div(n, d, eps = 1e-6):
     return n.div_(d + eps)
 
 def lcm(*numbers):
-    return int(reduce(lambda x, y: (x * y) / gcd(x, y), numbers, 1))
+    return int(reduce(lambda x, y: int((x * y) / gcd(x, y)), numbers, 1))
 
 def merge_dims(ind_from, ind_to, tensor):
     shape = list(tensor.shape)
