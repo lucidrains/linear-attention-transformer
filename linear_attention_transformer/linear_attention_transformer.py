@@ -138,7 +138,6 @@ class FeedForward(nn.Module):
 
 def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
     dim = q.shape[-1]
-    (q, k) = map(lambda x: x * (dim ** -0.25), (q, k))
 
     if kv_mask is not None:
         mask_value = max_neg_value(q)
@@ -149,6 +148,8 @@ def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
 
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
+
+    q = q * dim ** -0.5
 
     context_einsum_eq = 'bhnd,bhne->bhde' if not one_kv_head else 'bnd,bne->bde'
     context = torch.einsum(context_einsum_eq, k, v)
@@ -162,8 +163,6 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
     assert (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
-
-    (q, k) = map(lambda x: x * (e ** -0.25), (q, k))
 
     q = q.softmax(dim=-1)
     k = k - k.max(dim=-2, keepdims=True).values
@@ -191,6 +190,8 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
         context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
         seq_dim = 1 if one_kv_head else 2
         context, _ = split_at_index(seq_dim, -1, context)
+
+    b_q = b_q * e ** -0.5
 
     attn_einsum_eq = 'bhund,bhude->bhune' if not one_kv_head else 'bhund,bude->bhune'
     attn = torch.einsum(attn_einsum_eq, b_q, context)
