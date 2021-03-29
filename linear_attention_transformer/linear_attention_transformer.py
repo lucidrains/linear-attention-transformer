@@ -186,10 +186,9 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
 
     context = safe_div(context_cumsum, b_k_cumsum.unsqueeze(-1))
 
-    if bucket_size != 1:
-        context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
-        seq_dim = 1 if one_kv_head else 2
-        context, _ = split_at_index(seq_dim, -1, context)
+    context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
+    seq_dim = 1 if one_kv_head else 2
+    context, _ = split_at_index(seq_dim, -1, context)
 
     b_q = b_q * e ** -0.5
 
