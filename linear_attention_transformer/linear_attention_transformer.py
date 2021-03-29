@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, einsum
 import math
 from operator import mul
 from math import gcd
@@ -152,21 +152,23 @@ def linear_attn(q, k, v, kv_mask = None, one_kv_head = False):
     q = q * dim ** -0.5
 
     context_einsum_eq = 'bhnd,bhne->bhde' if not one_kv_head else 'bnd,bne->bde'
-    context = torch.einsum(context_einsum_eq, k, v)
+    context = einsum(context_einsum_eq, k, v)
 
     attn_einsum_eq = 'bhnd,bhde->bhne' if not one_kv_head else 'bhnd,bde->bhne'
-    attn = torch.einsum(attn_einsum_eq, q, context)
+    attn = einsum(attn_einsum_eq, q, context)
 
     return attn.reshape(*q.shape)
 
 def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size = None):
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
-    assert (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
+    assert bucket_size == 0 or (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
 
     q = q.softmax(dim=-1)
     k = k - k.max(dim=-2, keepdims=True).values
     k = torch.exp(k).type(dtype).clone()
+
+    q = q * e ** -0.5
 
     if kv_mask is not None:
         mask = kv_mask[:, :, None] if one_kv_head else kv_mask[:, None, :, None]
@@ -174,26 +176,35 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
         v = v.masked_fill_(~mask, 0.)
         del mask
 
-    bucket_fn = lambda x: x.reshape(*x.shape[:-2], -1, bucket_size, e)
-    b_q, b_k, b_v = map(bucket_fn, (q, k, v))
+    if bucket_size == 0:
+        context_einsum_eq = 'bhnd,bhne->bhnde' if not one_kv_head else 'bnd,bne->bnde'
+        context = einsum(context_einsum_eq, k, v)
+        k_cumsum = k.cumsum(dim = -2).type(dtype)
 
-    b_k_sum = b_k.sum(dim=-2)
-    b_k_cumsum = b_k_sum.cumsum(dim=-2).type(dtype)
+        context_cumsum = context.cumsum(dim = -3).type(dtype)
+        context = safe_div(context_cumsum, k_cumsum.unsqueeze(-1))
+        attn_einsum_eq = 'bhnd,bhnde->bhne' if not one_kv_head else 'bhnd,bnde->bhne'
+        attn = einsum(attn_einsum_eq, q, context)
 
-    context_einsum_eq = 'bhund,bhune->bhude' if not one_kv_head else 'bund,bune->bude'
-    context = torch.einsum(context_einsum_eq, b_k, b_v)
-    context_cumsum = context.cumsum(dim=-3).type(dtype)
+    else:
+        bucket_fn = lambda x: x.reshape(*x.shape[:-2], -1, bucket_size, e)
+        b_q, b_k, b_v = map(bucket_fn, (q, k, v))
 
-    context = safe_div(context_cumsum, b_k_cumsum.unsqueeze(-1))
+        b_k_sum = b_k.sum(dim=-2)
+        b_k_cumsum = b_k_sum.cumsum(dim = -2).type(dtype)
 
-    context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
-    seq_dim = 1 if one_kv_head else 2
-    context, _ = split_at_index(seq_dim, -1, context)
+        context_einsum_eq = 'bhund,bhune->bhude' if not one_kv_head else 'bund,bune->bude'
+        context = einsum(context_einsum_eq, b_k, b_v)
+        context_cumsum = context.cumsum(dim = -3).type(dtype)
 
-    b_q = b_q * e ** -0.5
+        context = safe_div(context_cumsum, b_k_cumsum.unsqueeze(-1))
 
-    attn_einsum_eq = 'bhund,bhude->bhune' if not one_kv_head else 'bhund,bude->bhune'
-    attn = torch.einsum(attn_einsum_eq, b_q, context)
+        context = F.pad(context, (0, 0, 0, 0, 1, 0), value=0.)
+        seq_dim = 1 if one_kv_head else 2
+        context, _ = split_at_index(seq_dim, -1, context)
+
+        attn_einsum_eq = 'bhund,bhude->bhune' if not one_kv_head else 'bhund,bude->bhune'
+        attn = einsum(attn_einsum_eq, b_q, context)
     return attn.reshape(*q.shape)
 
 class SelfAttention(nn.Module):
