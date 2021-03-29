@@ -165,7 +165,6 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
     assert bucket_size == 0 or (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
 
     q = q.softmax(dim=-1)
-    k = k - k.max(dim=-2, keepdims=True).values
     k = torch.exp(k).type(dtype).clone()
 
     q = q * e ** -0.5
@@ -205,6 +204,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, one_kv_head = False, bucket_size
 
         attn_einsum_eq = 'bhund,bhude->bhune' if not one_kv_head else 'bhund,bude->bhune'
         attn = einsum(attn_einsum_eq, b_q, context)
+
     return attn.reshape(*q.shape)
 
 class SelfAttention(nn.Module):
