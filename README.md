@@ -75,7 +75,6 @@ enc = LinearAttentionTransformerLM(
     heads = 8,
     depth = 6,
     max_seq_len = 4096,
-    one_kv_head = True,
     reversible = True,
     n_local_attn_heads = 4,
     return_embeddings = True
@@ -88,7 +87,6 @@ dec = LinearAttentionTransformerLM(
     depth = 6,
     causal = True,
     max_seq_len = 4096,
-    one_kv_head = True,
     reversible = True,
     receives_context = True,
     n_local_attn_heads = 4
@@ -119,7 +117,6 @@ enc = LinearAttentionTransformerLM(
     heads = 8,
     depth = 6,
     max_seq_len = 4096,
-    one_kv_head = True,
     linformer_settings = settings
 ).cuda()
 ```
@@ -141,7 +138,6 @@ dec = LinearAttentionTransformerLM(
     depth = 6,
     max_seq_len = 4096,
     causal = True,
-    one_kv_head = True,
     context_linformer_settings = settings,
     receives_context = True
 ).cuda()
@@ -189,16 +185,6 @@ attn(img) # (1, 32, 256, 256)
   volume    = {abs/1812.01243},
   year      = {2018},
   url       = {http://arxiv.org/abs/1812.01243}
-}
-```
-
-```bibtex
-@misc{shazeer2019fast,
-  title   = {Fast Transformer Decoding: One Write-Head is All You Need},
-  author  = {Noam Shazeer},
-  year    = {2019},
-  eprint  = {1911.02150},
-  archivePrefix = {arXiv}
 }
 ```
 

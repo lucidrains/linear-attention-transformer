@@ -34,7 +34,6 @@ enc = LinearAttentionTransformerLM(
     heads = 8,
     depth = 1,
     max_seq_len = ENC_SEQ_LEN,
-    one_kv_head = True,
     return_embeddings = True
 ).cuda()
 
@@ -46,7 +45,6 @@ dec = LinearAttentionTransformerLM(
     causal = True,
     blindspot_size = 2,             # a small blindspot greatly saves on memory
     max_seq_len = DEC_SEQ_LEN,
-    one_kv_head = True,
     receives_context = True
 ).cuda()
 
