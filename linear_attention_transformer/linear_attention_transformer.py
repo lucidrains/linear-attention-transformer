@@ -179,7 +179,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None):
     b_k_cumsum = b_k_sum.cumsum(dim = -2).type(dtype)
 
     context = einsum('bhund,bhune->bhude', b_k, b_v)
-    context_cumsum = context.cumsum(dim = -3).type(dtype)
+    context = context.cumsum(dim = -3).type(dtype)
 
     if bucket_size > 1:
         context = F.pad(context, (0, 0, 0, 0, 1, 0), value = 0.)
