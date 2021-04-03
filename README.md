@@ -224,3 +224,12 @@ attn(img) # (1, 32, 256, 256)
     eprint  = {2002.07028}
 }
 ```
+
+```bibtex
+@techreport{zhuiyiroformer,
+    title   = {RoFormer: Transformer with Rotary Position Embeddings - ZhuiyiAI},
+    author  = {Jianlin Su},
+    year    = {2021},
+    url     = "https://github.com/ZhuiyiTechnology/roformer",
+}
+```

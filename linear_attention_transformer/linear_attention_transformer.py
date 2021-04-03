@@ -14,6 +14,8 @@ from product_key_memory import PKM
 from axial_positional_embedding import AxialPositionalEmbedding
 from linear_attention_transformer.reversible import ReversibleSequence, SequentialSequence
 
+from einops import rearrange, repeat
+
 # namedtuple settings
 
 LinformerSettings = namedtuple('LinformerSettings', ['k'])
@@ -21,8 +23,14 @@ LinformerContextSettings = namedtuple('LinformerContextSettings', ['seq_len', 'k
 
 # helper functions
 
+def exists(val):
+    return val is not None
+
 def default(value, d):
-    return d if value is None else value
+    return d if not exists(value) else value
+
+def always(value):
+    return lambda *args, **kwargs: value
 
 def cast_tuple(val):
     return (val,) if not isinstance(val, tuple) else val
@@ -103,6 +111,35 @@ class AbsolutePositionalEmbedding(nn.Module):
         t = torch.arange(x.shape[1], device=x.device)
         return self.emb(t)[None, :, :]
 
+# sinusoidal positional embeddings
+
+class FixedPositionalEmbedding(nn.Module):
+    def __init__(self, dim, max_seq_len):
+        super().__init__()
+        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        position = torch.arange(0, max_seq_len, dtype=torch.float)
+        sinusoid_inp = torch.einsum("i,j->ij", position, inv_freq)
+        emb = torch.cat((sinusoid_inp.sin(), sinusoid_inp.cos()), dim=-1)
+        self.register_buffer('emb', emb)
+
+    def forward(self, x):
+        return self.emb[None, :x.shape[1], :].to(x)
+
+# rotary positional embedding helpers
+
+def rotate_every_two(x):
+    x = rearrange(x, '... (d j) -> ... d j', j = 2)
+    x1, x2 = x.unbind(dim = -1)
+    x = torch.stack((-x2, x1), dim = -1)
+    return rearrange(x, '... d j -> ... (d j)')
+
+def apply_rotory_pos_emb(q, k, sinu_pos):
+    sinu_pos = rearrange(sinu_pos, '() n (j d) -> n j d', j = 2)
+    sin, cos = sinu_pos.unbind(dim = -2)
+    sin, cos = map(lambda t: repeat(t, 'b n -> b (n j)', j = 2), (sin, cos))
+    q, k = map(lambda t: (t * cos) + (rotate_every_two(t) * sin), (q, k))
+    return q, k
+
 # feedforward
 
 class GELU_(nn.Module):
@@ -139,7 +176,7 @@ class FeedForward(nn.Module):
 def linear_attn(q, k, v, kv_mask = None):
     dim = q.shape[-1]
 
-    if kv_mask is not None:
+    if exists(kv_mask):
         mask_value = max_neg_value(q)
         mask = kv_mask[:, None, :, None]
         k = k.masked_fill_(~mask, mask_value)
@@ -166,7 +203,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None):
 
     q = q * e ** -0.5
 
-    if kv_mask is not None:
+    if exists(kv_mask):
         mask = kv_mask[:, None, :, None]
         k = k.masked_fill_(~mask, 0.)
         v = v.masked_fill_(~mask, 0.)
@@ -219,8 +256,8 @@ class SelfAttention(nn.Module):
         self.to_out = nn.Linear(d_heads * heads, dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, input_mask = None, context = None, context_mask = None, **kwargs):
-        assert not (self.receives_context and context is None), 'context must be supplied if self attention is in receives context mode'
+    def forward(self, x, input_mask = None, context = None, context_mask = None, pos_emb = None, **kwargs):
+        assert not (self.receives_context and not exists(context)), 'context must be supplied if self attention is in receives context mode'
 
         if not self.receives_context:
             q, k, v = (self.to_q(x), self.to_k(x), self.to_v(x))
@@ -232,6 +269,9 @@ class SelfAttention(nn.Module):
         merge_heads = lambda x: x.reshape(*x.shape[:2], -1, dh).transpose(1, 2)
 
         q, k, v = map(merge_heads, (q, k, v))
+
+        if exists(pos_emb) and not self.receives_context:
+            q, k = apply_rotory_pos_emb(q, k, pos_emb)
 
         out = []
 
@@ -266,7 +306,7 @@ class FoldAxially(nn.Module):
         x = x.reshape(b, -1, ax, d).transpose(1, 2).reshape(b * ax, -1, d)
 
         mask = None
-        if input_mask is not None:
+        if exists(input_mask):
             mask = input_mask.reshape(b, -1, ax).transpose(1, 2).reshape(b * ax, -1)
 
         x = self.fn(x, input_mask = mask, **kwargs)
@@ -276,9 +316,9 @@ class FoldAxially(nn.Module):
 class LinearAttentionTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, dim_head = None, bucket_size = 64, causal = False, ff_chunks = 1, ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., attn_dropout = 0., reversible = False, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, receives_context = False, attend_axially = False, pkm_layers = tuple(), pkm_num_keys = 128, linformer_settings = None, context_linformer_settings = None):
         super().__init__()
-        assert not (causal and linformer_settings is not None), 'Linformer self attention layer can only be used for non-causal networks'
-        assert linformer_settings is None or isinstance(linformer_settings, LinformerSettings), 'Linformer self-attention settings must be a LinformerSettings namedtuple'
-        assert context_linformer_settings is None or isinstance(context_linformer_settings, LinformerContextSettings), 'Linformer contextual self-attention settings must be a LinformerSettings namedtuple'
+        assert not (causal and exists(linformer_settings)), 'Linformer self attention layer can only be used for non-causal networks'
+        assert not exists(linformer_settings) or isinstance(linformer_settings, LinformerSettings), 'Linformer self-attention settings must be a LinformerSettings namedtuple'
+        assert not exists(context_linformer_settings) or isinstance(context_linformer_settings, LinformerContextSettings), 'Linformer contextual self-attention settings must be a LinformerSettings namedtuple'
 
         if type(n_local_attn_heads) is not tuple:
             n_local_attn_heads = tuple([n_local_attn_heads] * depth)
@@ -294,7 +334,7 @@ class LinearAttentionTransformer(nn.Module):
 
             parallel_net = Chunk(ff_chunks, FeedForward(dim), along_dim = 1) if not use_pkm else PKM(dim)
 
-            if linformer_settings is None:
+            if not exists(linformer_settings):
                 attn = SelfAttention(dim, heads, causal, dim_head = dim_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size, dropout = attn_layer_dropout, attn_dropout= attn_dropout)
             else:
                 attn = LinformerSelfAttention(dim, max_seq_len, heads = heads, dim_head = dim_head, dropout = attn_dropout, **linformer_settings._asdict())
@@ -311,7 +351,7 @@ class LinearAttentionTransformer(nn.Module):
                 ]))
 
             if receives_context:
-                if context_linformer_settings is None:
+                if not exists(context_linformer_settings):
                     attn = SelfAttention(dim, heads, dim_head = dim_head, dropout = attn_layer_dropout, attn_dropout= attn_dropout, receives_context = True)
                 else:
                     attn = LinformerSelfAttention(dim, heads = heads, dim_head = dim_head, dropout = attn_dropout, **context_linformer_settings._asdict())
@@ -329,7 +369,7 @@ class LinearAttentionTransformer(nn.Module):
         route_context = ((False, False), *axial_layer, *attn_context_layer) * depth
 
         context_route_map = {'context': route_context, 'context_mask': route_context} if receives_context else {}
-        attn_route_map = {'input_mask': route_attn}
+        attn_route_map = {'input_mask': route_attn, 'pos_emb': route_attn}
         self.layers = execute_type(layers, args_route = {**attn_route_map, **context_route_map})
 
         self.pad_to_multiple = lcm(
@@ -341,7 +381,7 @@ class LinearAttentionTransformer(nn.Module):
         return self.layers(x, **kwargs)
 
 class LinearAttentionTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, dim_head = None, causal = False, emb_dim = None, reversible = False, ff_chunks = 1, ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., attn_dropout = 0., blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, return_embeddings = False, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128, attend_axially = False, linformer_settings = None, context_linformer_settings = None, use_axial_pos_emb = True):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, dim_head = 64, causal = False, emb_dim = None, reversible = False, ff_chunks = 1, ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., attn_dropout = 0., blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, return_embeddings = False, receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128, attend_axially = False, linformer_settings = None, context_linformer_settings = None, use_axial_pos_emb = True, use_rotary_emb = False):
         assert n_local_attn_heads == 0 or (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the local attention window size'
         super().__init__()
         emb_dim = default(emb_dim, dim)
@@ -349,10 +389,15 @@ class LinearAttentionTransformerLM(nn.Module):
 
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
 
-        if use_axial_pos_emb:
-            self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(math.ceil(max_seq_len / local_attn_window_size), local_attn_window_size))
+        if use_rotary_emb:
+            self.pos_emb = FixedPositionalEmbedding(emb_dim, max_seq_len)
+            self.layer_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len)
+        elif use_axial_pos_emb:
+            self.pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(math.ceil(max_seq_len / local_attn_window_size), local_attn_window_size))
+            self.layer_pos_emb = always(None)
         else:
-            self.axial_pos_emb = AbsolutePositionalEmbedding(emb_dim, max_seq_len)
+            self.pos_emb = AbsolutePositionalEmbedding(emb_dim, max_seq_len)
+            self.layer_pos_emb = always(None)
 
         self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, causal = causal, ff_chunks = ff_chunks, ff_glu = ff_glu, ff_dropout = ff_dropout, attn_layer_dropout = attn_layer_dropout, attn_dropout = attn_dropout, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, receives_context = receives_context, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys, attend_axially = attend_axially, linformer_settings = linformer_settings, context_linformer_settings = context_linformer_settings)
 
@@ -364,7 +409,9 @@ class LinearAttentionTransformerLM(nn.Module):
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
-        x = x + self.axial_pos_emb(x).type(x.type())
-        x = self.transformer(x, **kwargs)
+        x = x + self.pos_emb(x).type(x.type())
+
+        layer_pos_emb = self.layer_pos_emb(x)
+        x = self.transformer(x, pos_emb = layer_pos_emb, **kwargs)
         x = self.norm(x)
         return self.out(x)
