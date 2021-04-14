@@ -192,7 +192,7 @@ def linear_attn(q, k, v, kv_mask = None):
     attn = einsum('bhnd,bhde->bhne', q, context)
     return attn.reshape(*q.shape)
 
-def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None):
+def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, eps = 1e-6):
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
     bucket_size = max(bucket_size, 1)
@@ -225,7 +225,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None):
         b_k_cumsum = F.pad(b_k_cumsum, (0, 0, 1, 0), value = 0.)
         b_k_cumsum, _ = split_at_index(2, -1, b_k_cumsum)
 
-    D_inv = 1. / einsum('bhud,bhund->bhun', b_k_cumsum, b_q)
+    D_inv = 1. / einsum('bhud,bhund->bhun', b_k_cumsum + eps, b_q)
     attn = einsum('bhund,bhude,bhun->bhune', b_q, context, D_inv)
     return attn.reshape(*q.shape)
 
