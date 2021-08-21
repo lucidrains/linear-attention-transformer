@@ -57,6 +57,7 @@ model = LinearAttentionTransformerLM(
     causal = True,
     reversible = True,
     blindspot_size = 2,
+    shift_tokens = True,
     n_local_attn_heads = (8, 8, 8, 8, 4, 4, 2, 2)
 )
 

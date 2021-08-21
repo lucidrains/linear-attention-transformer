@@ -44,6 +44,7 @@ model = LinearAttentionTransformerLM(
     max_seq_len = SEQ_LEN,
     heads = 8,
     causal = True,
+    shift_tokens = True,
     pkm_layers = (4,)
 )
 

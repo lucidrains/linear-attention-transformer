@@ -38,7 +38,8 @@ model = LinearAttentionTransformerLM(
     reversible = True,              # use reversible nets, from Reformer paper
     ff_chunks = 2,                  # feedforward chunking, from Reformer paper
     ff_glu = True,                  # use GLU variant for feedforward
-    attend_axially = False          # will fold the sequence by the local attention window size, and do an extra strided attention followed by a feedforward with the cheap q(kv) attention
+    attend_axially = False,         # will fold the sequence by the local attention window size, and do an extra strided attention followed by a feedforward with the cheap q(kv) attention
+    shift_tokens = True             # add single token shifting, for great improved convergence
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).cuda()
