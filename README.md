@@ -234,3 +234,14 @@ attn(img) # (1, 32, 256, 256)
     url     = "https://github.com/ZhuiyiTechnology/roformer",
 }
 ```
+
+```bibtex
+@misc{chen2021permuteformer,
+    title   = {PermuteFormer: Efficient Relative Position Encoding for Long Sequences},
+    author  = {Peng Chen},
+    year    = {2021},
+    eprint  = {2109.02377},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CL}
+}
+```

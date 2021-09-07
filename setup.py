@@ -16,7 +16,7 @@ setup(
       'linformer>=0.1.0',
       'local-attention',
       'product-key-memory>=0.1.5',
-      'torch',
+      'torch>=1.8',
   ],
   classifiers=[
       'Development Status :: 4 - Beta',

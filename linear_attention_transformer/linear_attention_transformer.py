@@ -139,7 +139,7 @@ class AbsolutePositionalEmbedding(nn.Module):
         t = torch.arange(x.shape[1], device=x.device)
         return self.emb(t)[None, :, :]
 
-# sinusoidal positional embeddings
+# rotary positional embeddings classes and helpers
 
 class FixedPositionalEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len):
@@ -153,33 +153,73 @@ class FixedPositionalEmbedding(nn.Module):
     def forward(self, x):
         return self.emb[None, :x.shape[1], :].to(x)
 
-# rotary positional embedding helpers
-
 def rotate_every_two(x):
     x = rearrange(x, '... (d j) -> ... d j', j = 2)
     x1, x2 = x.unbind(dim = -1)
     x = torch.stack((-x2, x1), dim = -1)
     return rearrange(x, '... d j -> ... (d j)')
 
-def apply_rotory_pos_emb(q, k, sinu_pos):
+def apply_rotary_pos_emb(q, k, sinu_pos):
     sinu_pos = rearrange(sinu_pos, '() n (j d) -> n j d', j = 2)
     sin, cos = sinu_pos.unbind(dim = -2)
     sin, cos = map(lambda t: repeat(t, 'b n -> b (n j)', j = 2), (sin, cos))
     q, k = map(lambda t: (t * cos) + (rotate_every_two(t) * sin), (q, k))
     return q, k
 
+# position permutator classes
+
+class PositionPermutator(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim_head,
+        heads,
+        max_seq_len,
+        causal = False
+    ):
+        super().__init__()
+        self.causal = causal
+
+        base_permutations = torch.stack([torch.randperm(dim_head) for _ in range(heads)])
+
+        # calculate the permutation, for each head, across the entire sequence length
+        seq_permutations = [base_permutations]
+        for _ in range(max_seq_len - 1):
+            curr_permutation = seq_permutations[-1]
+            next_permutation = curr_permutation.gather(-1, base_permutations)
+            seq_permutations.append(next_permutation)
+
+        permutations = torch.stack(seq_permutations, dim = 1) # (heads, seq, feature)
+
+        # calculate ratios
+        ratios = torch.sigmoid(torch.arange(heads) / heads * 3 + 2) if causal else None
+
+        self.register_buffer('permutations', permutations)
+        self.register_buffer('ratios', ratios)
+
+    def apply_ratio(self, q, k):
+        if not self.causal:
+            return t
+        seq = torch.arange(q.shape[-2], device = q.device)
+        ratios = rearrange(self.ratios, 'h -> () h () ()')
+        seq = rearrange(seq, 'n -> () () n ()')
+        q_ratios = ratios ** seq
+        k_ratios = ratios ** -seq
+        return q * q_ratios, k * k_ratios
+
+    def forward(self, t):
+        b, _, n, _ = t.shape
+        permutations = repeat(self.permutations, '... -> b ...', b = b)
+        permutations = permutations[:, :, :n]
+        permuted_t = t.gather(-1, permutations)
+        return permuted_t
+
 # feedforward
-
-class GELU_(nn.Module):
-    def forward(self, x):
-        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
-
-GELU = nn.GELU if hasattr(nn, 'GELU') else GELU_
 
 class FeedForward(nn.Module):
     def __init__(self, dim, mult = 4, dropout = 0., activation = None, glu = False):
         super().__init__()
-        activation = default(activation, GELU)
+        activation = default(activation, nn.GELU)
 
         self.glu = glu
         self.w1 = nn.Linear(dim, dim * mult * (2 if glu else 1))
@@ -201,7 +241,7 @@ class FeedForward(nn.Module):
 
 # self attention layer
 
-def linear_attn(q, k, v, kv_mask = None):
+def linear_attn(q, k, v, kv_mask = None, apply_qk_fn = None):
     dim = q.shape[-1]
 
     if exists(kv_mask):
@@ -214,22 +254,26 @@ def linear_attn(q, k, v, kv_mask = None):
     q = q.softmax(dim=-1)
     k = k.softmax(dim=-2)
 
+    if exists(apply_qk_fn):
+        q, k = apply_qk_fn(q, k)
+
     q = q * dim ** -0.5
 
     context = einsum('bhnd,bhne->bhde', k, v)
     attn = einsum('bhnd,bhde->bhne', q, context)
     return attn.reshape(*q.shape)
 
-def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, eps = 1e-6):
+def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, apply_qk_fn = None, eps = 1e-3):
     b, h, n, e, dtype = *q.shape, q.dtype
     bucket_size = default(bucket_size, 64)
     bucket_size = max(bucket_size, 1)
     assert bucket_size == 0 or (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
 
-    q = q.softmax(dim=-1)
-    k = torch.exp(k).type(dtype).clone()
+    q = F.relu(q) + eps
+    k = F.relu(k) + eps
 
-    q = q * e ** -0.5
+    if exists(apply_qk_fn):
+        q, k = apply_qk_fn(q, k)
 
     if exists(kv_mask):
         mask = kv_mask[:, None, :, None]
@@ -253,12 +297,26 @@ def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, eps = 1e-6):
         b_k_cumsum = F.pad(b_k_cumsum, (0, 0, 1, 0), value = 0.)
         b_k_cumsum, _ = split_at_index(2, -1, b_k_cumsum)
 
-    D_inv = 1. / einsum('bhud,bhund->bhun', b_k_cumsum + eps, b_q)
+    D_inv = 1. / (einsum('bhud,bhund->bhun', b_k_cumsum, b_q))
     attn = einsum('bhund,bhude,bhun->bhune', b_q, context, D_inv)
     return attn.reshape(*q.shape)
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, heads, causal = False, dim_head = None, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, receives_context = False, dropout = 0., attn_dropout = 0.):
+    def __init__(
+        self,
+        dim,
+        heads,
+        causal = False,
+        dim_head = None,
+        blindspot_size = 1,
+        n_local_attn_heads = 0,
+        local_attn_window_size = 128,
+        receives_context = False,
+        use_pos_permuted_qk = False,
+        max_seq_len = None,
+        dropout = 0.,
+        attn_dropout = 0.
+    ):
         super().__init__()
         assert dim_head or (dim % heads) == 0, 'embedding dimension must be divisible by number of heads'
         d_heads = default(dim_head, dim // heads)
@@ -281,10 +339,23 @@ class SelfAttention(nn.Module):
         self.to_k = nn.Linear(dim, d_heads * kv_heads, bias = False)
         self.to_v = nn.Linear(dim, d_heads * kv_heads, bias = False)
 
+        self.pos_permutator = None
+        if use_pos_permuted_qk:
+            assert exists(max_seq_len), 'max_seq_len must be supplied if position dependent permutation is turned on'
+            self.pos_permutator = PositionPermutator(dim_head = d_heads, heads = self.global_attn_heads, max_seq_len = max_seq_len, causal = causal)
+
         self.to_out = nn.Linear(d_heads * heads, dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, input_mask = None, context = None, context_mask = None, pos_emb = None, **kwargs):
+    def forward(
+        self,
+        x,
+        input_mask = None,
+        context = None,
+        context_mask = None,
+        pos_emb = None,
+        **kwargs
+    ):
         assert not (self.receives_context and not exists(context)), 'context must be supplied if self attention is in receives context mode'
 
         if not self.receives_context:
@@ -299,7 +370,7 @@ class SelfAttention(nn.Module):
         q, k, v = map(merge_heads, (q, k, v))
 
         if exists(pos_emb) and not self.receives_context:
-            q, k = apply_rotory_pos_emb(q, k, pos_emb)
+            q, k = apply_rotary_pos_emb(q, k, pos_emb)
 
         out = []
 
@@ -315,7 +386,12 @@ class SelfAttention(nn.Module):
 
         if has_global:
             kv_mask = input_mask if not self.receives_context else context_mask
-            global_out = self.global_attn_fn(q, k, v, kv_mask = kv_mask)
+            apply_qk_fn = self.pos_permutator.apply_ratio if exists(self.pos_permutator) else None
+
+            if exists(self.pos_permutator) and not self.receives_context:
+                q, k = map(self.pos_permutator, (q, k))
+
+            global_out = self.global_attn_fn(q, k, v, kv_mask = kv_mask, apply_qk_fn = apply_qk_fn)
             out.append(global_out)
 
         attn = torch.cat(out, dim=1)
@@ -366,7 +442,8 @@ class LinearAttentionTransformer(nn.Module):
         pkm_num_keys = 128,
         linformer_settings = None,
         context_linformer_settings = None,
-        shift_tokens = False
+        shift_tokens = False,
+        use_pos_permuted_qk = False
     ):
         super().__init__()
         assert not (causal and exists(linformer_settings)), 'Linformer self attention layer can only be used for non-causal networks'
@@ -388,7 +465,7 @@ class LinearAttentionTransformer(nn.Module):
             parallel_net = Chunk(ff_chunks, FeedForward(dim), along_dim = 1) if not use_pkm else PKM(dim)
 
             if not exists(linformer_settings):
-                attn = SelfAttention(dim, heads, causal, dim_head = dim_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size, dropout = attn_layer_dropout, attn_dropout= attn_dropout)
+                attn = SelfAttention(dim, heads, causal, dim_head = dim_head, blindspot_size = blindspot_size, n_local_attn_heads = local_heads, local_attn_window_size = local_attn_window_size, use_pos_permuted_qk = use_pos_permuted_qk, max_seq_len = max_seq_len, dropout = attn_layer_dropout, attn_dropout= attn_dropout)
             else:
                 attn = LinformerSelfAttention(dim, max_seq_len, heads = heads, dim_head = dim_head, dropout = attn_dropout, **linformer_settings._asdict())
 
@@ -466,6 +543,7 @@ class LinearAttentionTransformerLM(nn.Module):
         context_linformer_settings = None,
         use_axial_pos_emb = True,
         use_rotary_emb = False,
+        use_pos_permuted_qk = False,
         shift_tokens = False
     ):
         assert n_local_attn_heads == 0 or (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the local attention window size'
@@ -485,7 +563,7 @@ class LinearAttentionTransformerLM(nn.Module):
             self.pos_emb = AbsolutePositionalEmbedding(emb_dim, max_seq_len)
             self.layer_pos_emb = always(None)
 
-        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, causal = causal, ff_chunks = ff_chunks, ff_glu = ff_glu, ff_dropout = ff_dropout, attn_layer_dropout = attn_layer_dropout, attn_dropout = attn_dropout, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, receives_context = receives_context, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys, attend_axially = attend_axially, linformer_settings = linformer_settings, context_linformer_settings = context_linformer_settings, shift_tokens = shift_tokens)
+        self.transformer = LinearAttentionTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, causal = causal, ff_chunks = ff_chunks, ff_glu = ff_glu, ff_dropout = ff_dropout, attn_layer_dropout = attn_layer_dropout, attn_dropout = attn_dropout, reversible = reversible, blindspot_size = blindspot_size, n_local_attn_heads = n_local_attn_heads, local_attn_window_size = local_attn_window_size, receives_context = receives_context, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys, attend_axially = attend_axially, linformer_settings = linformer_settings, context_linformer_settings = context_linformer_settings, shift_tokens = shift_tokens, use_pos_permuted_qk = use_pos_permuted_qk)
 
         if emb_dim != dim:
             self.transformer = ProjectInOut(self.transformer, emb_dim, dim, project_out = not return_embeddings)
