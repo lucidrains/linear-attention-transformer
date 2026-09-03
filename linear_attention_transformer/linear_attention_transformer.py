@@ -222,12 +222,23 @@ def linear_attn(q, k, v, kv_mask = None):
 
 def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, eps = 1e-3):
     b, h, n, e, dtype = *q.shape, q.dtype
+    input_shape = q.shape
     bucket_size = default(bucket_size, 64)
     bucket_size = max(bucket_size, 1)
     assert bucket_size == 0 or (n % bucket_size) == 0, f'sequence length {n} must be divisible by the bucket size {bucket_size} for causal linear attention'
 
-    q = q.softmax(dim=-1)
-    k = torch.exp(k).type(dtype).clone()
+    # Evaluate the positive feature map and its prefix sums in at least
+    # float32.  This avoids fp16 accumulation overflow while retaining the
+    # requested output dtype.
+    compute_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    q = q.to(compute_dtype).softmax(dim = -1)
+
+    # Bound the exponent before applying ``exp``.  The bound leaves headroom
+    # for summing all n keys, and is applied independently at each position so
+    # causal outputs never depend on a future key's scale.
+    max_log = math.log(torch.finfo(compute_dtype).max) - math.log(max(n, 1)) - 2.
+    k = torch.exp(k.to(compute_dtype).clamp(max = max_log))
+    v = v.to(compute_dtype)
 
     q = q * e ** -0.5
 
@@ -241,10 +252,10 @@ def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, eps = 1e-3):
     b_q, b_k, b_v = map(bucket_fn, (q, k, v))
 
     b_k_sum = b_k.sum(dim=-2)
-    b_k_cumsum = b_k_sum.cumsum(dim = -2).type(dtype)
+    b_k_cumsum = b_k_sum.cumsum(dim = -2)
 
     context = einsum('bhund,bhune->bhude', b_k, b_v)
-    context = context.cumsum(dim = -3).type(dtype)
+    context = context.cumsum(dim = -3)
 
     if bucket_size > 1:
         context = F.pad(context, (0, 0, 0, 0, 1, 0), value = 0.)
@@ -255,7 +266,7 @@ def causal_linear_attn(q, k, v, kv_mask = None, bucket_size = None, eps = 1e-3):
 
     D_inv = 1. / einsum('bhud,bhund->bhun', b_k_cumsum, b_q).clamp(min = eps)
     attn = einsum('bhund,bhude,bhun->bhune', b_q, context, D_inv)
-    return attn.reshape(*q.shape)
+    return attn.to(dtype).reshape(*input_shape)
 
 class SelfAttention(nn.Module):
     def __init__(self, dim, heads, causal = False, dim_head = None, blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, receives_context = False, dropout = 0., attn_dropout = 0.):
